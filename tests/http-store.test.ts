@@ -43,6 +43,7 @@ const request: NewApprovalRequest = {
   invoiceId: 'INV-1002',
   reason: 'Same supplier invoice number as the paid INV-1001.',
   exceptionCodes: ['DUPLICATE_INVOICE', 'QUANTITY_EXCEEDS_PO'],
+  exceptions: [{ code: 'DUPLICATE_INVOICE' }, { code: 'QUANTITY_EXCEEDS_PO', lineNo: 1, excess: 40 }],
   requestedBy: 'claude',
   invoiceTotal: money(966000, 'RON'),
   supplierName: 'Carpathian Office Supplies SRL',
@@ -78,6 +79,8 @@ describe('HttpApprovalStore', () => {
       tags: ['finance', 'duplicate-invoice', 'quantity-exceeds-po'],
       metadata: {
         exceptionCodes: ['DUPLICATE_INVOICE', 'QUANTITY_EXCEEDS_PO'],
+        // What the approver sees, per line and by how much: an approval is checked against it before it is applied.
+        exceptions: [{ code: 'DUPLICATE_INVOICE' }, { code: 'QUANTITY_EXCEEDS_PO', lineNo: 1, excess: 40 }],
         requestedBy: 'claude',
         supplier: 'Carpathian Office Supplies SRL',
       },
@@ -104,6 +107,16 @@ describe('HttpApprovalStore', () => {
       tags: ['finance', 'duplicate-invoice', 'quantity-exceeds-po'],
       metadata: { exceptionCodes: ['DUPLICATE_INVOICE', 'QUANTITY_EXCEEDS_PO', 'QUANTITY_EXCEEDS_PO'] },
     });
+  });
+
+  it('leaves the per-line detail out rather than go over the platform limit of 10 KB of metadata', async () => {
+    const { fetch, calls } = fakeFetch(login('t1'), created(true));
+    const exceptions = Array.from({ length: 300 }, (_, index) => ({ code: 'QUANTITY_NOT_RECEIVED' as const, lineNo: index + 1, excess: 1000 }));
+    await store(fetch).submit({ ...request, exceptionCodes: ['QUANTITY_NOT_RECEIVED'], exceptions });
+    const { metadata } = calls[1]!.body;
+    expect(metadata).not.toHaveProperty('exceptions');
+    expect(metadata.exceptionCodes).toEqual(['QUANTITY_NOT_RECEIVED']);
+    expect(JSON.stringify(metadata).length).toBeLessThanOrEqual(10_000);
   });
 
   it('uses normal priority when nothing points at fraud', async () => {
@@ -242,7 +255,12 @@ describe('HttpApprovalStore.find', () => {
   const detail = (changes: Record<string, unknown> = {}) => ({
     ...summary(REQUEST_ID, 'INV-1003'),
     description: 'reason',
-    metadata: { exceptionCodes: ['PRICE_VARIANCE'], requestedBy: 'claude', supplier: 'Somes' },
+    metadata: {
+      exceptionCodes: ['PRICE_VARIANCE'],
+      exceptions: [{ code: 'PRICE_VARIANCE', lineNo: 2, excess: 256 }],
+      requestedBy: 'claude',
+      supplier: 'Somes',
+    },
     decisions: [
       {
         id: OLDER_ID,
@@ -276,6 +294,7 @@ describe('HttpApprovalStore.find', () => {
       invoiceId: 'INV-1003',
       status: 'approved',
       exceptionCodes: ['PRICE_VARIANCE'],
+      exceptions: [{ code: 'PRICE_VARIANCE', lineNo: 2, excess: 256 }],
       comment: 'Supplier confirmed the new price list.',
       decidedBy: 'Ana Pop',
       decidedAt: '2026-11-18T10:00:00.000Z',
@@ -335,6 +354,22 @@ describe('HttpApprovalStore.find', () => {
   it('keeps exception codes it does not know out of the record', async () => {
     const { fetch } = fakeFetch(login('t1'), [200, detail({ metadata: { exceptionCodes: ['PRICE_VARIANCE', 'APPROVE_ME'] } })]);
     expect((await store(fetch).find({ invoiceId: 'INV-1003', approvalId: REQUEST_ID }))?.exceptionCodes).toEqual(['PRICE_VARIANCE']);
+  });
+
+  // Metadata is free-form on the platform. Detail that can't be read is dropped as a whole, and the approval then holds
+  // the invoice instead of being checked against half of what the approver saw.
+  it.each([
+    ['missing (a request raised before it was recorded)', undefined],
+    ['not a list', 'PRICE_VARIANCE on line 2'],
+    ['an unknown code', [{ code: 'PRICE_VARIANCE', lineNo: 2, excess: 256 }, { code: 'APPROVE_ME' }]],
+    ['a negative excess', [{ code: 'PRICE_VARIANCE', lineNo: 2, excess: -1 }]],
+    ['a line number that is not a whole number', [{ code: 'PRICE_VARIANCE', lineNo: '2', excess: 256 }]],
+  ])('reads no per-line detail when it is %s', async (_, exceptions) => {
+    const metadata = { exceptionCodes: ['PRICE_VARIANCE'], ...(exceptions !== undefined && { exceptions }) };
+    const { fetch } = fakeFetch(login('t1'), [200, detail({ metadata })]);
+    const record = await store(fetch).find({ invoiceId: 'INV-1003', approvalId: REQUEST_ID });
+    expect(record?.exceptionCodes).toEqual(['PRICE_VARIANCE']);
+    expect(record?.exceptions).toBeUndefined();
   });
 
   it('retries a 503 on reads too', async () => {
