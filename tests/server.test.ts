@@ -1,0 +1,172 @@
+// Drives the real MCP server through the SDK client over an in-memory transport:
+// the same protocol messages Claude sends, without starting a process.
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { InMemoryApprovalStore } from '../src/approvals/store.js';
+import { ErpRepository } from '../src/erp/repository.js';
+import { createServer } from '../src/server.js';
+
+let client: Client;
+let approvals: InMemoryApprovalStore;
+
+beforeEach(async () => {
+  const repository = await ErpRepository.fromFile(new URL('../data/erp-sample.json', import.meta.url));
+  approvals = new InMemoryApprovalStore(() => new Date('2026-11-18T09:00:00Z'));
+  const server = createServer({ repository, approvals });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  client = new Client({ name: 'test-client', version: '1.0.0' });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+});
+
+afterEach(async () => {
+  await client.close();
+});
+
+async function call(name: string, args: Record<string, unknown> = {}) {
+  const result = (await client.callTool({ name, arguments: args })) as CallToolResult;
+  const [first] = result.content;
+  const text = first?.type === 'text' ? first.text : '';
+  return { isError: result.isError ?? false, text, json: () => JSON.parse(text) as Record<string, any> };
+}
+
+describe('tool list', () => {
+  it('exposes the four tools with read-only hints on the queries', async () => {
+    const { tools } = await client.listTools();
+    const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
+    expect(Object.keys(byName).sort()).toEqual(['get_invoice', 'match_invoice', 'request_approval', 'search_invoices']);
+    expect(byName.search_invoices?.annotations?.readOnlyHint).toBe(true);
+    expect(byName.match_invoice?.annotations?.readOnlyHint).toBe(true);
+    expect(byName.request_approval?.annotations).toMatchObject({ readOnlyHint: false, idempotentHint: true });
+  });
+
+  it('publishes input schemas the model can follow', async () => {
+    const { tools } = await client.listTools();
+    const match = tools.find((tool) => tool.name === 'match_invoice');
+    expect(match?.inputSchema.required).toEqual(['invoiceId']);
+    expect(match?.inputSchema.properties).toHaveProperty('priceTolerancePct');
+  });
+});
+
+describe('search_invoices', () => {
+  it('returns all invoices, soonest due first', async () => {
+    const result = (await call('search_invoices')).json();
+    expect(result.total).toBe(9);
+    expect(result.items[0]).toMatchObject({ id: 'INV-1007', dueDate: '2026-10-06' });
+    expect(result.items.at(-1)).toMatchObject({ id: 'INV-1004', dueDate: '2026-11-23' });
+  });
+
+  it('filters by status, supplier name and due date together', async () => {
+    const result = (await call('search_invoices', { status: 'received', supplier: 'somes', dueBefore: '2026-11-10' })).json();
+    expect(result.items.map((item: { id: string }) => item.id)).toEqual(['INV-1005']);
+  });
+
+  it('accepts a supplier id', async () => {
+    const result = (await call('search_invoices', { supplier: 'SUP-004' })).json();
+    expect(result.items.map((item: { id: string }) => item.id)).toEqual(['INV-1007', 'INV-1008']);
+  });
+
+  it('pages through results', async () => {
+    const result = (await call('search_invoices', { limit: 2, offset: 8 })).json();
+    expect(result).toMatchObject({ total: 9, offset: 8, limit: 2 });
+    expect(result.items).toHaveLength(1);
+  });
+
+  it('formats totals from minor units', async () => {
+    const result = (await call('search_invoices', { supplier: 'SUP-003' })).json();
+    expect(result.items[0].total).toEqual({ amountMinor: 499000, currency: 'EUR', formatted: '4,990.00 EUR' });
+  });
+
+  it('rejects invalid input before the tool runs', async () => {
+    const result = await call('search_invoices', { limit: 500 });
+    expect(result.isError).toBe(true);
+    expect(result.text).toMatch(/limit/);
+  });
+});
+
+describe('get_invoice', () => {
+  it('returns the invoice with its supplier, PO and receipts', async () => {
+    const result = (await call('get_invoice', { invoiceId: 'INV-1008' })).json();
+    expect(result.invoice).toMatchObject({ id: 'INV-1008', total: { formatted: '2,295.00 EUR' } });
+    expect(result.supplier.name).toBe('Napoca Freight SRL');
+    expect(result.purchaseOrder).toMatchObject({ id: 'PO-2026-0004', total: { formatted: '22,800.00 RON' } });
+    expect(result.goodsReceipts).toHaveLength(2);
+  });
+
+  it('returns a tool error for an unknown invoice', async () => {
+    const result = await call('get_invoice', { invoiceId: 'INV-9999' });
+    expect(result).toMatchObject({ isError: true, text: expect.stringContaining('search_invoices') });
+  });
+
+  it('rejects a malformed id', async () => {
+    expect((await call('get_invoice', { invoiceId: 'banana' })).isError).toBe(true);
+  });
+});
+
+describe('match_invoice', () => {
+  // Every invoice in the sample data exists to show one case.
+  it.each([
+    ['INV-1001', []],
+    ['INV-1002', ['DUPLICATE_INVOICE', 'QUANTITY_NOT_RECEIVED', 'QUANTITY_NOT_RECEIVED']],
+    ['INV-1003', ['PRICE_VARIANCE']],
+    ['INV-1004', []],
+    ['INV-1005', ['QUANTITY_NOT_RECEIVED']],
+    ['INV-1006', ['LINE_NOT_ON_PO']],
+    ['INV-1007', []],
+    ['INV-1008', ['CURRENCY_MISMATCH']],
+    ['INV-1009', ['SUPPLIER_MISMATCH']],
+  ])('%s → %j', async (invoiceId, expected) => {
+    const result = (await call('match_invoice', { invoiceId })).json();
+    expect(result.exceptions.map((exception: { code: string }) => exception.code)).toEqual(expected);
+    expect(result.status).toBe(expected.length === 0 ? 'matched' : 'exception');
+  });
+
+  it('applies a custom price tolerance', async () => {
+    const result = (await call('match_invoice', { invoiceId: 'INV-1003', priceTolerancePct: 10 })).json();
+    expect(result).toMatchObject({ status: 'matched', priceTolerancePct: 10 });
+  });
+});
+
+describe('request_approval', () => {
+  const reason = 'Unit price for bolts is 8% above the PO; supplier needs to confirm.';
+
+  it('creates a pending request with the exception codes the server found', async () => {
+    const result = (await call('request_approval', { invoiceId: 'INV-1003', reason })).json();
+    expect(result).toEqual({
+      created: true,
+      approval: {
+        id: 'APR-0001',
+        invoiceId: 'INV-1003',
+        reason,
+        exceptionCodes: ['PRICE_VARIANCE'],
+        requestedBy: 'ai-agent',
+        status: 'pending',
+        createdAt: '2026-11-18T09:00:00.000Z',
+      },
+    });
+  });
+
+  it('returns the pending request when asked twice for the same invoice', async () => {
+    await call('request_approval', { invoiceId: 'INV-1003', reason });
+    const second = (await call('request_approval', { invoiceId: 'INV-1003', reason, requestedBy: 'retrying-agent' })).json();
+    expect(second).toMatchObject({ created: false, approval: { id: 'APR-0001', requestedBy: 'ai-agent' } });
+    expect(approvals.list()).toHaveLength(1);
+  });
+
+  it('refuses an invoice that passes matching', async () => {
+    const result = await call('request_approval', { invoiceId: 'INV-1004', reason });
+    expect(result).toMatchObject({ isError: true, text: expect.stringContaining('needs no approval') });
+    expect(approvals.list()).toHaveLength(0);
+  });
+
+  it('refuses an unknown invoice', async () => {
+    expect((await call('request_approval', { invoiceId: 'INV-9999', reason })).isError).toBe(true);
+  });
+
+  it('requires a real reason', async () => {
+    const result = await call('request_approval', { invoiceId: 'INV-1003', reason: '   ok    ' });
+    expect(result.isError).toBe(true);
+    expect(approvals.list()).toHaveLength(0);
+  });
+});
