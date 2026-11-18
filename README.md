@@ -37,6 +37,8 @@ Most invoices pass, so this check suits an agent. The ones that don't pass need 
 | `QUANTITY_EXCEEDS_PO` | More is billed than was ordered, counting what approved and paid invoices already billed. |
 | `QUANTITY_NOT_RECEIVED` | More is billed than was received, counting what approved and paid invoices already billed. |
 
+Line-level exceptions carry the invoice `lineNo`, and the measurable ones an `excess`: how far past the rule they are (for `PRICE_VARIANCE` the unit price difference in minor units, for the quantity checks the units billed beyond what was received or ordered).
+
 The sample data in [data/erp-sample.json](data/erp-sample.json) has one invoice for each case (INV-1001 to INV-1009), and the tests check all of them.
 
 ### A real session
@@ -196,9 +198,10 @@ How it works:
 - **Idempotency.** The platform delivers at least once and retries anything but `2xx`, with the same `webhook-id`. Processed ids are remembered (the last 10,000, in memory), and a repeat answers `200` without doing anything. Applying a decision is idempotent per approval request as well, so a repeat that the set has forgotten (after a restart, or on another instance) still changes nothing.
 - **What it does.** For a `request.approved` or `request.rejected` event from `source: erp-procurement-mcp`, with `externalRef` an invoice id, the server reads the request back from its approval store (the platform's API, or memory), checks it was really decided that way, and applies it:
   - **rejected:** the invoice becomes `rejected`.
-  - **approved:** the server re-runs the three-way match. If the exceptions are the ones the person saw, the invoice becomes `approved` (for payment), with a note naming the exceptions the approval overrides. If matching now finds an exception the person never saw (for example, another invoice on the same PO was approved meanwhile and used up its quantity), the invoice stays `on_hold` with a note saying so, and needs a new approval.
+  - **approved:** the server re-runs the three-way match. If the exceptions are the ones the person saw, the invoice becomes `approved` (for payment), with a note naming the exceptions the approval overrides. "The ones the person saw" is checked per exception and line: when the request is raised, the server records each exception's code, invoice line and how far past the rule it is (`excess`: the unit price difference in minor units, or the units billed beyond what was received or ordered), in the request's `metadata.exceptions` on the platform. If matching now finds an exception that is not on the request (a new code, or the same code on another line), or one that has grown (a larger price variance, a larger over-bill: for example, another invoice on the same PO was approved meanwhile and used up its quantity), the invoice stays `on_hold` with a note saying so, and needs a new approval. A request without that record (raised by an earlier version) holds the invoice too, unless it now passes matching.
+  - Only the newest request for an invoice decides it. A decision on an older request (its delivery was retried after the agent raised a new one) answers `200` `ignored`, reason "Superseded", and changes nothing.
   - Invoices that are not `received` or `on_hold` (already approved, paid or rejected) are left alone.
-  The decision is recorded on the invoice as `decision` (approval id, outcome, approver, time and the server's note). Notes are built from ids and exception codes only: the approver's comment stays in the approval record.
+  The decision is recorded on the invoice as `decision` (approval id, outcome, approver, time and the server's note). Notes are built from ids, exception codes and line numbers only: the approver's comment stays in the approval record.
 
 | Request | Answer |
 |---|---|
@@ -210,7 +213,7 @@ How it works:
 | No matching `v1` signature | `401` |
 | Too many requests from one address (the `/mcp` bucket) | `429` with `Retry-After` |
 | A `webhook-id` already processed | `200` `{"status":"duplicate"}` |
-| Signed, but not JSON, not an event, another event type, another source, an unknown invoice or request, or a request already decided the other way | `200` `{"status":"ignored","reason":...}`: a retry would not change anything |
+| Signed, but not JSON, not an event, another event type, another source, an unknown invoice or request, a request already decided the other way, or a request superseded by a newer one for the same invoice | `200` `{"status":"ignored","reason":...}`: a retry would not change anything |
 | The approvals API can't be reached to read the request | `503` with `Retry-After`, so the platform retries |
 | Applied | `200` `{"status":"applied","result":"approved"\|"rejected"\|"held"\|"unchanged","invoiceId":...,"invoiceStatus":...}` |
 
@@ -233,7 +236,7 @@ Two things are untrusted: the agent, and the ERP text it reads. Suppliers type t
 How the server holds that line:
 
 - **No tool can approve or pay.** Four tools are read-only; the only write, `request_approval`, creates a pending request for a person. An invoice's status changes only when a person's decision arrives on the signed webhook, and an approval is re-checked against the match before the invoice is approved for payment.
-- **`request_approval` re-checks everything.** It re-runs the match, refuses invoices that match or are already settled, and records the exception codes it found, not any the agent claims. Unknown arguments are dropped by the input schema.
+- **`request_approval` re-checks everything.** It re-runs the match, refuses invoices that match or are already settled, and records the exceptions it found (code, line and size), not any the agent claims. Unknown arguments are dropped by the input schema.
 - **Policy lives on the server.** The price tolerance is configuration, not a tool argument, so "finance raised the tolerance to 60%" in an invoice has nothing to act on.
 - **Supplier text stays data.** It comes back only inside JSON fields. Match results and errors are the server's own words, tool descriptions are fixed text, and the server's MCP instructions tell the model to treat ERP text as data and point out text that gives orders. That note is a hint to the model; the three points above are the defence.
 
