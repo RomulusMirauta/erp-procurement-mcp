@@ -119,11 +119,48 @@ claude mcp add erp-procurement   -e APPROVALS_API_URL=http://localhost:3000   -e
 
 The server signs in with an account that has the `agent` role, sends each request with the invoice amount, supplier and exception codes, and marks duplicates and supplier mismatches as high priority. The platform allows one pending request per invoice, so a retry returns the existing request, even across server restarts.
 
+## Run it remotely (HTTP)
+
+The same tools can be served over [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http), so the server can run on another machine and several clients can share it. Every client must send a shared secret as a bearer token.
+
+```bash
+export MCP_AUTH_TOKEN=$(openssl rand -hex 32)
+npm run build
+npm run start:http      # POST http://127.0.0.1:3000/mcp, GET /health
+```
+
+| Variable | |
+|---|---|
+| `MCP_AUTH_TOKEN` | Required. Clients send it as `Authorization: Bearer <token>`. At least 32 characters; the server refuses to start otherwise. |
+| `MCP_ALLOWED_ORIGINS` | Optional. Comma-separated browser origins allowed to call `/mcp`. A request with any other `Origin` header gets `403`. |
+| `HOST`, `PORT` | Optional. Default `127.0.0.1` and `3000`. Set `HOST=0.0.0.0` to accept connections from other machines, behind HTTPS. |
+
+`ERP_DATA_FILE`, `ERP_PRICE_TOLERANCE_PCT` and the `APPROVALS_API_*` variables work exactly as with stdio: both entry points share one startup module (`src/config.ts`).
+
+**Claude Code:**
+
+```bash
+claude mcp add --transport http erp-procurement https://your-host.example.com/mcp \
+  --header "Authorization: Bearer $MCP_AUTH_TOKEN"
+```
+
+How it works:
+
+- **Stateless.** Each `POST /mcp` gets a fresh MCP server and transport (`sessionIdGenerator: undefined`); the ERP data and the approval store are loaded once and shared. Nothing ties a client to one process, so it also runs on serverless platforms. `GET` and `DELETE` answer `405`: there is no session to stream to or to end.
+- **Authentication** is a shared secret, compared in constant time (both sides are hashed, then compared with `timingSafeEqual`), so response timing doesn't leak how much of a guess was right. A missing or wrong token gets `401` with `WWW-Authenticate: Bearer`. This is a simple first step: the production path is [OAuth 2.1](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization), as the MCP authorization spec describes, with per-user tokens that can be scoped and revoked.
+- **DNS rebinding.** The MCP spec asks servers to validate the `Origin` header, because a web page can make a browser send requests to servers on the user's network. With `MCP_ALLOWED_ORIGINS` set, unknown origins are refused before the token is checked. Clients like Claude Code don't send `Origin`, so they are not affected. Without the allowlist, the token is still required, and a page can't know it.
+- **`/health`** needs no token and returns only `{"status":"ok"}`, for uptime checks.
+
+**Vercel (not deployed yet).** [api/mcp.js](api/mcp.js) wraps the same handler as a serverless function and [vercel.json](vercel.json) maps `/mcp` and `/health` to it. Set `MCP_AUTH_TOKEN` (and optionally the other variables) in the project settings and deploy. Use `APPROVALS_API_URL` there: the in-memory approval store lives in one function instance, so requests would be lost between instances.
+
 ## How it's built
 
 ```
 src/
-  index.ts              entry point: loads data, serves over stdio
+  index.ts              entry point: serves over stdio
+  http-main.ts          entry point: serves over Streamable HTTP (node:http)
+  http.ts               HTTP handler: bearer token, Origin check, one stateless MCP server per request
+  config.ts             startup shared by both entry points: environment, data, approval store
   server.ts             MCP layer: the four tool definitions, nothing else
   outputs.ts            what each tool returns, as zod schemas (published as outputSchema)
   erp/schema.ts         data model as zod schemas; types are inferred from them
@@ -138,6 +175,8 @@ tests/
   server.test.ts        every tool through a real MCP client (in-memory transport)
   http-store.test.ts    the approvals API client against a fake fetch: sign-in, retry, errors
   stdio.test.ts         the server as a child process over stdio, like Claude runs it
+  http.test.ts          the HTTP server on a free port: SDK client, 401, 403, 405, /health
+api/mcp.js              Vercel serverless function wrapping the HTTP handler
 ```
 
 ### Design decisions
@@ -152,13 +191,13 @@ tests/
 - **Writes are idempotent.** Agents retry. A second `request_approval` for the same invoice returns the pending request instead of creating a duplicate. With the in-memory store this holds within one server process; with the approvals platform, a partial unique index in Postgres enforces it.
 - **Typed outputs.** Each tool publishes an `outputSchema` and returns `structuredContent`, so a client gets checked data instead of parsing text. The schemas reuse the data model and are tied to the business types (`Money`, `MatchResult`, `ApprovalRequest`) with `satisfies`, so a change on one side fails the typecheck. The same JSON is still sent as text for clients that only read text, and errors stay plain text.
 - **Tool annotations** (`readOnlyHint`, `idempotentHint`) tell the client which calls are safe to run without asking the user.
-- **stdio transport, logs on stderr.** stdout carries the protocol, so a stray `console.log` would corrupt it.
+- **Logs on stderr.** Over stdio, stdout carries the protocol, so a stray `console.log` would corrupt it. The HTTP entry logs to stderr too, for consistency.
 
 ## Development
 
 ```bash
-npm run dev         # run from source with tsx
-npm test            # Vitest: unit, MCP client and stdio tests
+npm run dev         # run from source with tsx (dev:http for the HTTP entry)
+npm test            # Vitest: unit, MCP client, stdio and HTTP tests
 npm run lint        # ESLint with typescript-eslint
 npm run typecheck   # tsc, strict mode
 npm run build       # compile to dist/
@@ -168,7 +207,7 @@ CI runs lint, typecheck, tests and the build on Node 22 and 24 (Ubuntu), and on 
 
 ## Roadmap
 
-- Streamable HTTP transport with authentication, for running the server remotely.
+- OAuth 2.1 for the HTTP transport, per the MCP authorization spec, replacing the shared bearer token.
 
 ## License
 

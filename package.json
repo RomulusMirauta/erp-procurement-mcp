@@ -18,7 +18,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
+    "start:http": "node dist/http-main.js",
     "dev": "tsx src/index.ts",
+    "dev:http": "tsx src/http-main.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",

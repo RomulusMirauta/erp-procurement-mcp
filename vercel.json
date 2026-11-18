@@ -1,0 +1,11 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build",
+  "functions": {
+    "api/mcp.js": { "includeFiles": "{dist,data}/**" }
+  },
+  "rewrites": [
+    { "source": "/mcp", "destination": "/api/mcp" },
+    { "source": "/health", "destination": "/api/mcp" }
+  ]
+}
