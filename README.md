@@ -109,6 +109,16 @@ claude mcp add erp-procurement -- node /absolute/path/to/erp-procurement-mcp/dis
 
 To use your own data, set `ERP_DATA_FILE` to the absolute path of a JSON file with the same shape as the sample. To change the price tolerance, set `ERP_PRICE_TOLERANCE_PCT` (see [.env.example](.env.example)). The server checks both at startup and refuses to start on bad values.
 
+### Send approvals to a real dashboard
+
+By default, approval requests stay in memory. Point the server at the [approvals platform](https://github.com/RomulusMirauta/approvals-platform) and they land in its exception queue, where an approver accepts or rejects them:
+
+```bash
+claude mcp add erp-procurement   -e APPROVALS_API_URL=http://localhost:3000   -e APPROVALS_API_EMAIL=erp-agent@example.com   -e APPROVALS_API_PASSWORD=demo-password   -- node /absolute/path/to/erp-procurement-mcp/dist/index.js
+```
+
+The server signs in with an account that has the `agent` role, sends each request with the invoice amount, supplier and exception codes, and marks duplicates and supplier mismatches as high priority. The platform allows one pending request per invoice, so a retry returns the existing request, even across server restarts.
+
 ## How it's built
 
 ```
@@ -120,11 +130,13 @@ src/
   erp/repository.ts     loads and validates the data, integrity checks, lookups
   erp/matching.ts       three-way matching rules (pure function)
   erp/money.ts          money in minor units and formatting
-  approvals/store.ts    approval requests (in memory for now)
+  approvals/store.ts    approval store interface, in-memory implementation
+  approvals/http-store.ts  sends approval requests to the approvals platform's REST API
 tests/
   matching.test.ts      the rules, case by case, including tolerance boundaries
   repository.test.ts    schema and integrity checks
   server.test.ts        every tool through a real MCP client (in-memory transport)
+  http-store.test.ts    the approvals API client against a fake fetch: sign-in, retry, errors
   stdio.test.ts         the server as a child process over stdio, like Claude runs it
 ```
 
@@ -137,7 +149,7 @@ tests/
 - **The server doesn't trust the agent.** `request_approval` re-runs the match itself and records the exception codes it found, not the ones the agent claimed. A matched invoice can't be sent for approval.
 - **The agent can't loosen the rules.** The price tolerance is finance policy, set when the server starts. It is deliberately not a tool argument, so a prompt-injected invoice can't talk the agent into a looser check.
 - **Only approved and paid invoices use up quantity.** Pending invoices, including wrong ones, don't block a correct invoice. Once one of two competing invoices is approved, the other fails its next check. For duplicates, approved and paid invoices always count as earlier, so a backdated copy of a paid invoice is still caught.
-- **Writes are idempotent.** Agents retry. A second `request_approval` for the same invoice returns the pending request instead of creating a duplicate. The store is in memory, so this holds within one server process. The approvals platform will enforce it with a unique constraint in the database.
+- **Writes are idempotent.** Agents retry. A second `request_approval` for the same invoice returns the pending request instead of creating a duplicate. With the in-memory store this holds within one server process; with the approvals platform, a partial unique index in Postgres enforces it.
 - **Typed outputs.** Each tool publishes an `outputSchema` and returns `structuredContent`, so a client gets checked data instead of parsing text. The schemas reuse the data model and are tied to the business types (`Money`, `MatchResult`, `ApprovalRequest`) with `satisfies`, so a change on one side fails the typecheck. The same JSON is still sent as text for clients that only read text, and errors stay plain text.
 - **Tool annotations** (`readOnlyHint`, `idempotentHint`) tell the client which calls are safe to run without asking the user.
 - **stdio transport, logs on stderr.** stdout carries the protocol, so a stray `console.log` would corrupt it.
@@ -156,7 +168,6 @@ CI runs lint, typecheck, tests and the build on Node 22 and 24 (Ubuntu), and on 
 
 ## Roadmap
 
-- Send approval requests to the approvals platform (in progress: Node.js API, Postgres, React dashboard) through its REST API, instead of keeping them in memory.
 - Streamable HTTP transport with authentication, for running the server remotely.
 
 ## License
