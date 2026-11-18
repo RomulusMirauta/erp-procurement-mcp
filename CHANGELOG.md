@@ -6,6 +6,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-18
+
 ### Added
 
 - `get_approval_status` tool (read-only): where an invoice's approval request stands (pending, approved, rejected, cancelled), the approver's comment, who decided and when, and the invoice's current ERP status. Works with the in-memory store and the approvals platform API.
@@ -73,6 +75,7 @@ Initial version (not tagged at the time).
 - CI: lint, typecheck, test and build on Node 22 and 24.
 - README with setup for Claude Code and Claude Desktop.
 
-[Unreleased]: https://github.com/RomulusMirauta/erp-procurement-mcp/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/RomulusMirauta/erp-procurement-mcp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/RomulusMirauta/erp-procurement-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/RomulusMirauta/erp-procurement-mcp/compare/8113878...v0.2.0
 [0.1.0]: https://github.com/RomulusMirauta/erp-procurement-mcp/tree/8113878

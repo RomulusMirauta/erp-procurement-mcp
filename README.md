@@ -294,6 +294,24 @@ api/mcp.js              Vercel serverless function wrapping the HTTP handler
 - **Tool annotations** (`readOnlyHint`, `idempotentHint`) tell the client which calls are safe to run without asking the user.
 - **Logs on stderr.** Over stdio, stdout carries the protocol, so a stray `console.log` would corrupt it. The HTTP entry logs to stderr too, for consistency.
 
+## How this was built
+
+Built in November 2026 as a deliberately AI-assisted project. The roles I'm aiming for ask for "AI-assisted from day one, balancing speed with engineering discipline"; this repo is what that looks like in practice.
+
+**My role and the AI's.** I decided the scope, the architecture, the data model, the trade-offs and what "done" means; Claude Code wrote most of the code under that direction. Every change went through a pull request with CI gates and a protected `main`, reviewed and approved by me. Where the AI's output was wrong, tests and reviews caught it, not trust.
+
+**Workflow**
+
+1. **Plan first.** Each feature started as a written plan with acceptance criteria and edge cases.
+2. **Small, test-first steps.** A failing test, then the code, then a refactor; strict TypeScript and zod at every boundary.
+3. **Parallel agents.** Independent features ran as separate Claude Code sub-agents, each in its own git worktree and branch.
+4. **Independent review.** A separate review agent, with no shared context, read each change. Every finding was reproduced with a test before it was fixed.
+5. **CI as the last gate.** Lint, typecheck, tests on Node 22 and 24 (Linux and Windows), the MCP Inspector smoke test, CodeQL and Dependabot. Nothing merges red.
+
+**What the QA background added:** the test strategy (rules case by case, the server through a real MCP client, stdio and HTTP end to end, agent evals) and the failure cases worth testing: duplicates, retries, replayed webhooks, prompt injection, and approvals that go stale while they wait.
+
+**What the reviews caught.** [FINDINGS.md](FINDINGS.md) lists 19 findings, 5 of them high severity, each with its fix and a regression test. Two examples: a backdated duplicate of a paid invoice came back `matched` and could have been paid twice; and an approval that went stale while it waited could still approve an invoice whose over-billing had grown since the approver saw it.
+
 ## Development
 
 ```bash
