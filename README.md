@@ -1,6 +1,7 @@
 # ERP Procurement MCP Server
 
 [![CI](https://github.com/RomulusMirauta/erp-procurement-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/RomulusMirauta/erp-procurement-mcp/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/erp-procurement-mcp)](https://www.npmjs.com/package/erp-procurement-mcp)
 
 An [MCP](https://modelcontextprotocol.io) server that lets an AI agent work through supplier invoices in an ERP: find them, check each one against its purchase order and goods receipts (**three-way matching**), and send the ones that fail to a person for approval.
 
@@ -88,7 +89,7 @@ Requires Node.js 22.12 or newer.
 claude mcp add erp-procurement -- npx -y erp-procurement-mcp
 ```
 
-Releases are published from GitHub Actions with npm Trusted Publishing, so each version carries signed provenance linking it to the commit and workflow that built it ([release.yml](.github/workflows/release.yml)).
+The first version (0.3.0) was published by hand, because npm only allows Trusted Publishing for a package that already exists. Later releases are published from GitHub Actions with npm Trusted Publishing, so each one carries signed provenance linking it to the commit and workflow that built it ([release.yml](.github/workflows/release.yml)).
 
 **From source:**
 
