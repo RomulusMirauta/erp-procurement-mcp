@@ -38,8 +38,8 @@ jobs:
       # that exists), so a tag for a version already on npm creates the GitHub release without publishing again.
       - name: Publish unless this version is already on npm
         run: |
-          name="$(node -p "require(./package.json).name")"
-          version="$(node -p "require(./package.json).version")"
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
           if npm view "$name@$version" version >/dev/null 2>&1; then
             echo "$name@$version is already on npm; skipping publish"
           else
