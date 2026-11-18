@@ -38,12 +38,42 @@ Most invoices pass, so this check suits an agent. The ones that don't pass need 
 
 The sample data in [data/erp-sample.json](data/erp-sample.json) has one invoice for each case (INV-1001 to INV-1009), and the tests check all of them.
 
-### Example session
+### A real session
 
-> **You:** Check the invoices from Somes that are still waiting and flag anything wrong.
+Recorded with Claude Code in headless mode (`claude -p`) against the bundled sample data, unedited apart from shortening the tool results.
+
+**Prompt:** *Check the invoices from Somes that are still waiting for a decision and flag anything wrong. Send the ones that need a person to approval, with a clear reason.*
+
+Tool calls Claude made:
+
+```text
+search_invoices   { supplier: "Somes", status: "received" }   → INV-1004, INV-1005
+search_invoices   { supplier: "Somes", status: "on_hold" }    → INV-1003
+match_invoice     { invoiceId: "INV-1003" }                   → exception: PRICE_VARIANCE (line 2)
+match_invoice     { invoiceId: "INV-1004" }                   → matched
+match_invoice     { invoiceId: "INV-1005" }                   → exception: QUANTITY_NOT_RECEIVED (line 1)
+request_approval  { invoiceId: "INV-1003", reason: "Line 2 unit price is 8% higher than the PO price
+                    (tolerance is ±2%). Please verify whether Somes communicated a price increase
+                    or if this is a billing error before approving 3,602.40 RON." } → APR-0001
+request_approval  { invoiceId: "INV-1005", reason: "Line 1 invoices 150 units but only 120 were
+                    received. Somes is billing for 30 units we haven't received yet. Please confirm
+                    whether a delivery is pending or if the quantity should be corrected before
+                    approving 2,775.00 RON." } → APR-0002
+```
+
+Claude's answer:
+
+> | Invoice | Amount | Due | Match result | Action |
+> |---|---|---|---|---|
+> | **INV-1004** (SIC-88502) | 1,644.30 RON | 23 Nov | Clean match | Ready to pay, no issues. |
+> | **INV-1003** (SIC-88213) | 3,602.40 RON | 28 Oct *(overdue)* | Price variance: line 2 is 8% above PO (limit ±2%) | Sent for approval (APR-0001) |
+> | **INV-1005** (SIC-88340) | 2,775.00 RON | 9 Nov *(overdue)* | Quantity mismatch: invoiced 150 units, only 120 received | Sent for approval (APR-0002) |
 >
-> **Claude:** *calls `search_invoices` with supplier "somes", then `match_invoice` for each.*
-> INV-1004 matches (the grease is 1.5% above the PO price, inside the 2% tolerance). INV-1005 bills 150 bearings, but only 120 have arrived so far. I've sent it for approval as APR-0001.
+> - **INV-1003** looks like either an unauthorised price increase or a billing error.
+> - **INV-1005** bills for 30 units we never received: could be a pending delivery or overbilling.
+> - **INV-1004** is clean and can proceed to payment.
+
+The agent did the checking; the two decisions went to a person.
 
 ## Use it with Claude
 
