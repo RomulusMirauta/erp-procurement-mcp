@@ -303,7 +303,12 @@ describe('get_approval_status', () => {
     await client.close();
     await connect(undefined, store);
     const { data } = await call('get_approval_status', { invoiceId: 'INV-1005' });
-    expect(data).toEqual({ invoice: { id: 'INV-1005', status: 'received' }, approval: cancelled });
+    // The invoice id is said once, in invoice.
+    const { id, status, exceptionCodes, comment, decidedBy, decidedAt, createdAt } = cancelled;
+    expect(data).toEqual({
+      invoice: { id: 'INV-1005', status: 'received' },
+      approval: { id, status, exceptionCodes, comment, decidedBy, decidedAt, createdAt },
+    });
   });
 
   it('returns approval: null for an invoice that was never sent for approval', async () => {

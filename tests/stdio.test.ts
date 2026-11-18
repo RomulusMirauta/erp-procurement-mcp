@@ -29,7 +29,7 @@ describe('stdio server', () => {
     await client.connect(transport);
     expect(client.getServerVersion()).toMatchObject({ name: 'erp-procurement' });
     const { tools } = await client.listTools();
-    expect(tools).toHaveLength(4);
+    expect(tools).toHaveLength(5);
     const result = await client.callTool({ name: 'match_invoice', arguments: { invoiceId: 'INV-1001' } });
     expect(result.isError).toBeFalsy();
   }, 20_000);

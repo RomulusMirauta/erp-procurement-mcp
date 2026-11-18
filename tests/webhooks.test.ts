@@ -15,6 +15,7 @@ const TOKEN = 'test-token-0123456789abcdef0123456789abcdef';
 const SPEC_SECRET = 'whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw';
 const SECRET = 'whsec_dGVzdC13ZWJob29rLXNlY3JldC0wMTIzNDU2Nzg5YWJjZGVm';
 const NOW = 1_795_000_000; // unix seconds, 2026-11-18
+const APPROVER_ID = '7d8e9f00-1a2b-4c3d-8e4f-5a6b7c8d9e0f';
 
 describe('readWebhookSecret', () => {
   it('is undefined when unset, so the route is not registered', () => {
@@ -28,10 +29,10 @@ describe('readWebhookSecret', () => {
     );
   });
 
-  it('refuses a secret without the prefix, with bad base64 or too short', () => {
+  it('refuses a secret without the prefix, with bad base64 or shorter than the 24 bytes the spec asks for', () => {
     expect(() => readWebhookSecret({ APPROVALS_WEBHOOK_SECRET: 'MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw' })).toThrow(/whsec_/);
     expect(() => readWebhookSecret({ APPROVALS_WEBHOOK_SECRET: 'whsec_not base64!' })).toThrow(/whsec_/);
-    expect(() => readWebhookSecret({ APPROVALS_WEBHOOK_SECRET: 'whsec_c2hvcnQ=' })).toThrow(/at least 16 bytes/);
+    expect(() => readWebhookSecret({ APPROVALS_WEBHOOK_SECRET: 'whsec_c2hvcnQ=' })).toThrow(/at least 24 bytes/);
   });
 });
 
@@ -80,18 +81,20 @@ let repository: ErpRepository;
 let approvals: InMemoryApprovalStore;
 
 afterEach(async () => {
-  server?.closeAllConnections();
+  if (!server) return;
+  server.closeAllConnections();
   await new Promise((resolve) => server?.close(resolve));
   server = undefined;
 });
 
-async function start(options: Partial<HttpOptions> = {}, secret: string | undefined = SECRET): Promise<URL> {
+// secret null: APPROVALS_WEBHOOK_SECRET unset.
+async function start(options: Partial<HttpOptions> = {}, secret: string | null = SECRET): Promise<URL> {
   repository = await ErpRepository.fromFile(new URL('../data/erp-sample.json', import.meta.url));
   approvals = new InMemoryApprovalStore(() => new Date('2026-11-18T09:00:00Z'));
   const handler = createHttpHandler({
     deps: { repository, approvals },
     authToken: TOKEN,
-    webhookSecret: secret === undefined ? undefined : readWebhookSecret({ APPROVALS_WEBHOOK_SECRET: secret }),
+    webhookSecret: secret === null ? undefined : readWebhookSecret({ APPROVALS_WEBHOOK_SECRET: secret }),
     now: () => NOW * 1000,
     ...options,
   });
@@ -135,14 +138,21 @@ function decided(decision: 'approved' | 'rejected', payload: Record<string, unkn
     id: 'evt_1',
     type,
     createdAt: '2026-11-18T10:00:00Z',
+    // The platform's payload (approvals-platform services/notifications): decidedBy is the approver's user id, and
+    // actor carries their name. Extra fields must be tolerated.
     payload: {
       requestId: 'APR-0001',
+      requesterId: APPROVER_ID,
+      title: 'INV-1003: PRICE_VARIANCE',
+      type: 'invoice_exception',
+      priority: 'normal',
       source: 'erp-procurement-mcp',
       externalRef: 'INV-1003',
       decision,
       comment: decision === 'approved' ? 'Supplier confirmed the new price list.' : 'Price increase was never agreed.',
-      decidedBy: 'Ana Pop',
+      decidedBy: APPROVER_ID,
       decidedAt: '2026-11-18T10:00:00+02:00',
+      actor: { id: APPROVER_ID, name: 'Ana Pop' },
       ...payload,
     },
   };
@@ -163,7 +173,7 @@ const requestApproval = (invoiceId: string) => {
 
 describe('POST /webhooks/approvals: authentication', () => {
   it('is not registered without APPROVALS_WEBHOOK_SECRET: fails closed with 404', async () => {
-    const url = await start({}, undefined);
+    const url = await start({}, null);
     expect((await deliver(url)).status).toBe(404);
   });
 
@@ -221,18 +231,17 @@ describe('POST /webhooks/approvals: authentication', () => {
     expect((await deliver(url, { body })).status).toBe(413);
   });
 
-  it('answers 400 to a signed body that is not a valid event', async () => {
+  // The sender retries anything but 2xx, and a signed body that can't be used won't get better on a retry.
+  it('answers 200 ignored to a signed body that is not a usable event, and changes nothing', async () => {
     const url = await start();
-    expect((await deliver(url, { body: 'not json' })).status).toBe(400);
-    expect((await deliver(url, { id: 'msg_2', body: { hello: 'world' } })).status).toBe(400);
+    await requestApproval('INV-1003');
     const missingDecision = decided('approved');
     delete (missingDecision.payload as Record<string, unknown>).decision;
-    expect((await deliver(url, { id: 'msg_3', body: missingDecision })).status).toBe(400);
-  });
-
-  it('answers 400 when the event type and the decision disagree', async () => {
-    const url = await start();
-    expect((await deliver(url, { body: decided('approved', { decision: 'rejected' }) })).status).toBe(400);
+    const bodies = ['not json', { hello: 'world' }, missingDecision, decided('approved', { decision: 'rejected' })];
+    for (const [index, body] of bodies.entries()) {
+      expect(await deliver(url, { id: `msg_${index}`, body })).toEqual({ status: 200, body: { status: 'ignored', reason: expect.any(String) } });
+    }
+    expect(repository.getInvoice('INV-1003')?.status).toBe('on_hold');
   });
 });
 
@@ -259,6 +268,15 @@ describe('POST /webhooks/approvals: applying decisions', () => {
       decidedBy: 'Ana Pop',
       decidedAt: '2026-11-18T08:00:00.000Z',
     });
+  });
+
+  it('accepts a null comment and falls back to the approver id without an actor', async () => {
+    const url = await start();
+    await requestApproval('INV-1003');
+    const body = decided('approved', { comment: null });
+    delete (body.payload as Record<string, unknown>).actor;
+    expect((await deliver(url, { body })).body).toMatchObject({ status: 'applied', result: 'approved' });
+    expect(await approvals.find({ invoiceId: 'INV-1003' })).toMatchObject({ comment: null, decidedBy: APPROVER_ID });
   });
 
   it('rejects the invoice', async () => {
