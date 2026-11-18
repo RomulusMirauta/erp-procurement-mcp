@@ -121,24 +121,79 @@ describe('matchInvoice', () => {
       expect(matchInvoice(invoice(), context({ receipts: [first, second] })).status).toBe('matched');
     });
 
+    const widgets = (quantity: number) => [{ lineNo: 1, description: 'Widget', quantity, unitPriceMinor: 1000 }];
+    const partial: GoodsReceipt = { ...fullReceipt, lines: [{ lineNo: 1, quantityReceived: 60 }] };
+
     it('accepts a split invoice while the total stays within what was received', () => {
-      const half = [{ lineNo: 1, description: 'Widget', quantity: 50, unitPriceMinor: 1000 }];
-      const first = invoice({ id: 'INV-1001', supplierInvoiceNumber: 'S-1', lines: half });
-      const second = invoice({ id: 'INV-1002', supplierInvoiceNumber: 'S-2', invoiceDate: '2026-09-11', lines: half });
+      const first = invoice({ id: 'INV-1001', supplierInvoiceNumber: 'S-1', status: 'paid', lines: widgets(50) });
+      const second = invoice({ id: 'INV-1002', supplierInvoiceNumber: 'S-2', invoiceDate: '2026-09-11', lines: widgets(50) });
       expect(matchInvoice(second, context({ priorInvoices: [first] })).status).toBe('matched');
     });
 
-    it('flags quantity that earlier invoices on the same PO already billed', () => {
-      const earlier = invoice({ id: 'INV-1000', supplierInvoiceNumber: 'S-0', invoiceDate: '2026-09-06' });
-      expect(codes(matchInvoice(invoice(), context({ priorInvoices: [earlier] })))).toEqual([
-        'QUANTITY_NOT_RECEIVED',
-        'QUANTITY_NOT_RECEIVED',
+    it('flags quantity that approved or paid invoices on the same PO already billed', () => {
+      const paid = invoice({ id: 'INV-1000', supplierInvoiceNumber: 'S-0', status: 'paid', lines: widgets(50) });
+      const result = matchInvoice(invoice({ lines: widgets(20) }), context({ receipts: [partial], priorInvoices: [paid] }));
+      expect(result.exceptions).toEqual([
+        expect.objectContaining({
+          code: 'QUANTITY_NOT_RECEIVED',
+          message: 'Invoiced 20, but only 60 received and 50 already invoiced.',
+        }),
       ]);
     });
 
+    it('does not let pending invoices use up quantity', () => {
+      // A wrong-supplier or duplicate invoice still waiting for a decision must not block a correct one.
+      const pending = invoice({ id: 'INV-1000', supplierId: 'SUP-009', supplierInvoiceNumber: 'X-1', status: 'on_hold' });
+      expect(matchInvoice(invoice(), context({ priorInvoices: [pending] })).status).toBe('matched');
+    });
+
     it('ignores earlier invoices on other POs', () => {
-      const otherPo = invoice({ id: 'INV-1000', supplierInvoiceNumber: 'S-0', poId: 'PO-2026-0099' });
+      const otherPo = invoice({ id: 'INV-1000', supplierInvoiceNumber: 'S-0', status: 'paid', poId: 'PO-2026-0099' });
       expect(matchInvoice(invoice(), context({ priorInvoices: [otherPo] })).status).toBe('matched');
+    });
+
+    it('adds up a PO line that appears on several lines of the same invoice', () => {
+      const lines = [...widgets(40), ...widgets(40)];
+      const result = matchInvoice(invoice({ lines }), context({ receipts: [partial] }));
+      expect(result.exceptions).toEqual([
+        expect.objectContaining({ code: 'QUANTITY_NOT_RECEIVED', lineNo: 1, message: expect.stringContaining('Invoiced 80') }),
+      ]);
+    });
+
+    it('flags billing for more than was ordered, even if more was delivered', () => {
+      const overDelivery: GoodsReceipt = { ...fullReceipt, lines: [{ lineNo: 1, quantityReceived: 120 }] };
+      expect(codes(matchInvoice(invoice({ lines: widgets(120) }), context({ receipts: [overDelivery] })))).toEqual([
+        'QUANTITY_EXCEEDS_PO',
+      ]);
+    });
+  });
+
+  describe('price edge cases', () => {
+    const freeLine: PurchaseOrder = { ...po, lines: [{ lineNo: 1, sku: 'S', description: 'Sample', quantity: 1, unitPriceMinor: 0 }] };
+    const receipt: GoodsReceipt = { ...fullReceipt, lines: [{ lineNo: 1, quantityReceived: 1 }] };
+    const sample = (unitPriceMinor: number) =>
+      invoice({ lines: [{ lineNo: 1, description: 'Sample', quantity: 1, unitPriceMinor }] });
+
+    it('accepts a free-of-charge line billed at 0', () => {
+      expect(matchInvoice(sample(0), context({ purchaseOrder: freeLine, receipts: [receipt] })).status).toBe('matched');
+    });
+
+    it('flags a free-of-charge line that is billed, without dividing by zero', () => {
+      const result = matchInvoice(sample(500), context({ purchaseOrder: freeLine, receipts: [receipt] }));
+      expect(result.exceptions).toEqual([
+        expect.objectContaining({ code: 'PRICE_VARIANCE', message: expect.stringContaining('free of charge') }),
+      ]);
+    });
+
+    it.each([
+      [7, 1070, 'matched'],
+      [7, 1071, 'exception'],
+      [0.7, 1007, 'matched'],
+      [0, 1000, 'matched'],
+      [0, 1001, 'exception'],
+    ] as const)('at %s%% tolerance, 1000 → %i is %s exactly at the boundary', (tolerance, price, status) => {
+      const lines = [{ lineNo: 1, description: 'Widget', quantity: 100, unitPriceMinor: price }];
+      expect(matchInvoice(invoice({ lines }), context(), tolerance).status).toBe(status);
     });
   });
 
@@ -147,7 +202,7 @@ describe('matchInvoice', () => {
     expect(codes(matchInvoice(invoice({ supplierId: 'SUP-009', lines }), context()))).toEqual([
       'SUPPLIER_MISMATCH',
       'PRICE_VARIANCE',
-      'QUANTITY_NOT_RECEIVED',
+      'QUANTITY_EXCEEDS_PO',
     ]);
   });
 });

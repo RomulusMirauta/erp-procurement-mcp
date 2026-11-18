@@ -1,5 +1,6 @@
 // Read-only access to the ERP data, loaded once from a JSON file.
 import { readFile } from 'node:fs/promises';
+import { isSettled } from './matching.js';
 import { ErpDataSchema, type ErpData, type GoodsReceipt, type Invoice, type PurchaseOrder, type Supplier } from './schema.js';
 
 export class ErpDataError extends Error {
@@ -45,8 +46,11 @@ export function checkIntegrity(data: ErpData): string[] {
   return problems;
 }
 
-// An invoice issued before another one, ordered by date and then by id.
-export function isIssuedBefore(a: Invoice, b: Invoice): boolean {
+// Which of two invoices comes first. Settled invoices (approved or paid) always come before pending ones,
+// so a new invoice can never turn an already paid one into a duplicate, even when it is backdated.
+// Within each group, the earlier invoice date wins, then the lower id.
+export function comesBefore(a: Invoice, b: Invoice): boolean {
+  if (isSettled(a) !== isSettled(b)) return isSettled(a);
   return a.invoiceDate < b.invoiceDate || (a.invoiceDate === b.invoiceDate && a.id < b.id);
 }
 
@@ -105,10 +109,10 @@ export class ErpRepository {
     return this.data.goodsReceipts.filter((receipt) => receipt.poId === poId);
   }
 
-  // Invoices issued before this one that still count: rejected invoices are never paid.
+  // Every invoice that comes before this one, except rejected ones, which will never be paid.
   priorInvoices(invoice: Invoice): Invoice[] {
     return this.data.invoices.filter(
-      (other) => other.id !== invoice.id && other.status !== 'rejected' && isIssuedBefore(other, invoice),
+      (other) => other.id !== invoice.id && other.status !== 'rejected' && comesBefore(other, invoice),
     );
   }
 }

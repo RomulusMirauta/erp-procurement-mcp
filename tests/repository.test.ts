@@ -39,6 +39,15 @@ describe('ErpRepository', () => {
     // INV-1005 is dated 2026-09-25: INV-1006 has the same date but a higher id, so it comes later.
     expect(prior).toEqual(['INV-1001', 'INV-1002', 'INV-1007']);
   });
+
+  it('puts paid invoices first, so a backdated copy cannot get ahead of them', async () => {
+    const data = await sample();
+    const paid = data.invoices.find((invoice) => invoice.id === 'INV-1001')!;
+    data.invoices.push({ ...paid, id: 'INV-1010', invoiceDate: '2026-09-01', status: 'received' });
+    const repository = ErpRepository.fromJson(data);
+    expect(repository.priorInvoices(repository.getInvoice('INV-1010')!).map((invoice) => invoice.id)).toContain('INV-1001');
+    expect(repository.priorInvoices(paid).map((invoice) => invoice.id)).not.toContain('INV-1010');
+  });
 });
 
 describe('checkIntegrity', () => {

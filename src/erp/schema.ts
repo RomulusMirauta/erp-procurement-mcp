@@ -2,7 +2,7 @@
 // and the same schemas validate the data file when the server starts.
 import { z } from 'zod';
 
-// Money is stored in minor units (bani, cents) as integers, so sums never pick up float rounding errors.
+// Money is stored in minor units (bani, cents) as integers, and all money arithmetic stays in integers.
 const minorUnits = z.number().int().nonnegative();
 const isoDate = z.iso.date();
 const currency = z.enum(['RON', 'EUR']);

@@ -8,6 +8,7 @@ export type ExceptionCode =
   | 'DUPLICATE_INVOICE'
   | 'LINE_NOT_ON_PO'
   | 'PRICE_VARIANCE'
+  | 'QUANTITY_EXCEEDS_PO'
   | 'QUANTITY_NOT_RECEIVED';
 
 export interface MatchException {
@@ -27,13 +28,23 @@ export interface MatchResult {
 export interface MatchContext {
   purchaseOrder: PurchaseOrder;
   receipts: readonly GoodsReceipt[];
-  // Invoices issued before this one that still count, from any supplier and any PO.
+  // Invoices that come before this one (see ErpRepository.priorInvoices), from any supplier and any PO.
+  // The duplicate check uses all of them; the quantity checks use only the settled ones on this PO.
   priorInvoices: readonly Invoice[];
 }
 
 export const DEFAULT_PRICE_TOLERANCE_PCT = 2;
 
+// Approved or paid: the company has committed to pay for these quantities.
+export const isSettled = (invoice: Invoice) => invoice.status === 'approved' || invoice.status === 'paid';
+
 const sumQuantity = <T>(rows: readonly T[], quantity: (row: T) => number) => rows.reduce((sum, row) => sum + quantity(row), 0);
+
+// Compares in integers (basis points), so a 7% tolerance means exactly 7%, and a PO price of 0 can't divide by zero.
+function exceedsTolerance(invoicePrice: number, poPrice: number, tolerancePct: number): boolean {
+  const toleranceBasisPoints = Math.round(tolerancePct * 100);
+  return Math.abs(invoicePrice - poPrice) * 10_000 > toleranceBasisPoints * poPrice;
+}
 
 export function matchInvoice(
   invoice: Invoice,
@@ -65,7 +76,12 @@ export function matchInvoice(
     });
   }
 
-  const priorOnPo = priorInvoices.filter((other) => other.poId === po.id);
+  // Pending invoices don't use up quantity: only what is already approved or paid does. When one of two
+  // competing invoices gets approved, the other one fails its next check.
+  const settledOnPo = priorInvoices.filter((other) => other.poId === po.id && isSettled(other));
+  // The same PO line can appear on several invoice lines (partial batches), so this invoice's lines add up too.
+  const billedOnThisInvoice = new Map<number, number>();
+
   for (const line of invoice.lines) {
     const poLine = po.lines.find((candidate) => candidate.lineNo === line.lineNo);
     if (!poLine) {
@@ -77,31 +93,39 @@ export function matchInvoice(
       continue;
     }
 
-    if (sameCurrency) {
-      const variancePct = ((line.unitPriceMinor - poLine.unitPriceMinor) / poLine.unitPriceMinor) * 100;
-      if (Math.abs(variancePct) > priceTolerancePct) {
-        exceptions.push({
-          code: 'PRICE_VARIANCE',
-          lineNo: line.lineNo,
-          message: `Unit price differs from the PO by ${variancePct.toFixed(2)}% (tolerance ±${priceTolerancePct}%).`,
-        });
-      }
+    if (sameCurrency && exceedsTolerance(line.unitPriceMinor, poLine.unitPriceMinor, priceTolerancePct)) {
+      const difference =
+        poLine.unitPriceMinor === 0
+          ? `is ${line.unitPriceMinor} but the PO line is free of charge`
+          : `differs from the PO by ${(((line.unitPriceMinor - poLine.unitPriceMinor) / poLine.unitPriceMinor) * 100).toFixed(2)}%`;
+      exceptions.push({
+        code: 'PRICE_VARIANCE',
+        lineNo: line.lineNo,
+        message: `Unit price ${difference} (tolerance ±${priceTolerancePct}%).`,
+      });
     }
 
-    // Quantity check: what was received, minus what earlier invoices already billed, must cover this invoice.
+    const billedHere = (billedOnThisInvoice.get(line.lineNo) ?? 0) + line.quantity;
+    billedOnThisInvoice.set(line.lineNo, billedHere);
     const received = sumQuantity(
       receipts.flatMap((receipt) => receipt.lines.filter((row) => row.lineNo === line.lineNo)),
       (row) => row.quantityReceived,
     );
     const alreadyInvoiced = sumQuantity(
-      priorOnPo.flatMap((other) => other.lines.filter((row) => row.lineNo === line.lineNo)),
+      settledOnPo.flatMap((other) => other.lines.filter((row) => row.lineNo === line.lineNo)),
       (row) => row.quantity,
     );
-    if (line.quantity > received - alreadyInvoiced) {
+    if (alreadyInvoiced + billedHere > poLine.quantity) {
+      exceptions.push({
+        code: 'QUANTITY_EXCEEDS_PO',
+        lineNo: line.lineNo,
+        message: `Invoiced ${billedHere}, but only ${poLine.quantity} ordered and ${alreadyInvoiced} already invoiced.`,
+      });
+    } else if (alreadyInvoiced + billedHere > received) {
       exceptions.push({
         code: 'QUANTITY_NOT_RECEIVED',
         lineNo: line.lineNo,
-        message: `Invoiced ${line.quantity}, but only ${received} received and ${alreadyInvoiced} already invoiced.`,
+        message: `Invoiced ${billedHere}, but only ${received} received and ${alreadyInvoiced} already invoiced.`,
       });
     }
   }
