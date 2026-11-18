@@ -88,7 +88,7 @@ async function runScenario(scenario: Scenario, workDir: string): Promise<Run> {
   const output = await runClaude(
     [
       '-p', scenario.prompt,
-      // Only this server, only its four tools, no built-in tools (Bash, Read...), and no user or project settings.
+      // Only this server, only its tools, no built-in tools (Bash, Read...), and no user or project settings.
       '--mcp-config', config,
       '--strict-mcp-config',
       '--allowedTools', TOOLS.map((tool) => PREFIX + tool).join(','),

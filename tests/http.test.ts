@@ -65,7 +65,7 @@ describe('HTTP server with the SDK client', () => {
     await connect(TOKEN);
     expect(client?.getServerVersion()).toMatchObject({ name: 'erp-procurement' });
     const { tools } = (await client?.listTools()) ?? { tools: [] };
-    expect(tools).toHaveLength(4);
+    expect(tools).toHaveLength(5);
     const result = (await client?.callTool({ name: 'match_invoice', arguments: { invoiceId: 'INV-1001' } })) as CallToolResult;
     expect(result.isError).toBeFalsy();
     expect(result.structuredContent).toMatchObject({ invoiceId: 'INV-1001', status: 'matched' });
