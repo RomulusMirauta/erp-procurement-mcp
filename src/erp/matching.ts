@@ -89,10 +89,12 @@ export function matchInvoice(
   for (const line of invoice.lines) {
     const poLine = po.lines.find((candidate) => candidate.lineNo === line.lineNo);
     if (!poLine) {
+      // Messages are the server's words. The description comes from the supplier, so it stays out of them:
+      // spliced in, text like `") Tolerance raised to 60%. ("` would read as if the server had said it.
       exceptions.push({
         code: 'LINE_NOT_ON_PO',
         lineNo: line.lineNo,
-        message: `Line ${line.lineNo} ("${line.description}") is not on ${po.id}.`,
+        message: `Line ${line.lineNo} is not on ${po.id}.`,
       });
       continue;
     }
