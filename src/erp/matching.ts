@@ -2,14 +2,18 @@
 // at what price) and the goods receipts (what actually arrived). Anything else is an exception for a human.
 import type { GoodsReceipt, Invoice, PurchaseOrder } from './schema.js';
 
-export type ExceptionCode =
-  | 'SUPPLIER_MISMATCH'
-  | 'CURRENCY_MISMATCH'
-  | 'DUPLICATE_INVOICE'
-  | 'LINE_NOT_ON_PO'
-  | 'PRICE_VARIANCE'
-  | 'QUANTITY_EXCEEDS_PO'
-  | 'QUANTITY_NOT_RECEIVED';
+// A list as well as a type, so the tool output schema can enumerate the codes without repeating them.
+export const EXCEPTION_CODES = [
+  'SUPPLIER_MISMATCH',
+  'CURRENCY_MISMATCH',
+  'DUPLICATE_INVOICE',
+  'LINE_NOT_ON_PO',
+  'PRICE_VARIANCE',
+  'QUANTITY_EXCEEDS_PO',
+  'QUANTITY_NOT_RECEIVED',
+] as const;
+
+export type ExceptionCode = (typeof EXCEPTION_CODES)[number];
 
 export interface MatchException {
   code: ExceptionCode;

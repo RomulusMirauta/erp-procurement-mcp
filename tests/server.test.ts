@@ -18,6 +18,9 @@ async function connect(priceTolerancePct?: number) {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   client = new Client({ name: 'test-client', version: '1.0.0' });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  // The client checks each structuredContent against the tool's outputSchema, but only for tools it has listed,
+  // as Claude does on connect. So every successful call in these tests also proves the output fits its schema.
+  await client.listTools();
 }
 
 beforeEach(async () => {
@@ -32,7 +35,7 @@ async function call(name: string, args: Record<string, unknown> = {}) {
   const result = (await client.callTool({ name, arguments: args })) as CallToolResult;
   const [first] = result.content;
   const text = first?.type === 'text' ? first.text : '';
-  return { isError: result.isError ?? false, text, json: () => JSON.parse(text) as Record<string, any> };
+  return { isError: result.isError ?? false, text, data: result.structuredContent as Record<string, any> };
 }
 
 describe('tool list', () => {
@@ -52,34 +55,55 @@ describe('tool list', () => {
     // The price tolerance is finance policy set on the server, so the agent cannot loosen it.
     expect(match?.inputSchema.properties).not.toHaveProperty('priceTolerancePct');
   });
+
+  it('publishes strict output schemas for every tool', async () => {
+    const { tools } = await client.listTools();
+    for (const tool of tools) {
+      expect(tool.outputSchema, tool.name).toMatchObject({ type: 'object', additionalProperties: false });
+    }
+    const match = tools.find((tool) => tool.name === 'match_invoice');
+    expect(match?.outputSchema?.required).toEqual(['invoiceId', 'poId', 'status', 'priceTolerancePct', 'exceptions', 'invoiceTotal']);
+  });
+});
+
+describe('tool results', () => {
+  it('carry the same data as structuredContent and as JSON text', async () => {
+    const result = await call('get_invoice', { invoiceId: 'INV-1003' });
+    expect(JSON.parse(result.text)).toEqual(result.data);
+  });
+
+  it('carry no structuredContent on errors', async () => {
+    const result = await call('match_invoice', { invoiceId: 'INV-9999' });
+    expect(result).toMatchObject({ isError: true, data: undefined });
+  });
 });
 
 describe('search_invoices', () => {
   it('returns all invoices, soonest due first', async () => {
-    const result = (await call('search_invoices')).json();
+    const result = (await call('search_invoices')).data;
     expect(result.total).toBe(9);
     expect(result.items[0]).toMatchObject({ id: 'INV-1007', dueDate: '2026-10-06' });
     expect(result.items.at(-1)).toMatchObject({ id: 'INV-1004', dueDate: '2026-11-23' });
   });
 
   it('filters by status, supplier name and due date together', async () => {
-    const result = (await call('search_invoices', { status: 'received', supplier: 'somes', dueBefore: '2026-11-10' })).json();
+    const result = (await call('search_invoices', { status: 'received', supplier: 'somes', dueBefore: '2026-11-10' })).data;
     expect(result.items.map((item: { id: string }) => item.id)).toEqual(['INV-1005']);
   });
 
   it('accepts a supplier id', async () => {
-    const result = (await call('search_invoices', { supplier: 'SUP-004' })).json();
+    const result = (await call('search_invoices', { supplier: 'SUP-004' })).data;
     expect(result.items.map((item: { id: string }) => item.id)).toEqual(['INV-1007', 'INV-1008']);
   });
 
   it('pages through results', async () => {
-    const result = (await call('search_invoices', { limit: 2, offset: 8 })).json();
+    const result = (await call('search_invoices', { limit: 2, offset: 8 })).data;
     expect(result).toMatchObject({ total: 9, offset: 8, limit: 2 });
     expect(result.items).toHaveLength(1);
   });
 
   it('formats totals from minor units', async () => {
-    const result = (await call('search_invoices', { supplier: 'SUP-003' })).json();
+    const result = (await call('search_invoices', { supplier: 'SUP-003' })).data;
     expect(result.items[0].total).toEqual({ amountMinor: 499000, currency: 'EUR', formatted: '4,990.00 EUR' });
   });
 
@@ -92,7 +116,7 @@ describe('search_invoices', () => {
 
 describe('get_invoice', () => {
   it('returns the invoice with its supplier, PO and receipts', async () => {
-    const result = (await call('get_invoice', { invoiceId: 'INV-1008' })).json();
+    const result = (await call('get_invoice', { invoiceId: 'INV-1008' })).data;
     expect(result.invoice).toMatchObject({ id: 'INV-1008', total: { formatted: '2,295.00 EUR' } });
     expect(result.supplier.name).toBe('Napoca Freight SRL');
     expect(result.purchaseOrder).toMatchObject({ id: 'PO-2026-0004', total: { formatted: '22,800.00 RON' } });
@@ -122,7 +146,7 @@ describe('match_invoice', () => {
     ['INV-1008', ['CURRENCY_MISMATCH']],
     ['INV-1009', ['SUPPLIER_MISMATCH']],
   ])('%s → %j', async (invoiceId, expected) => {
-    const result = (await call('match_invoice', { invoiceId })).json();
+    const result = (await call('match_invoice', { invoiceId })).data;
     expect(result.exceptions.map((exception: { code: string }) => exception.code)).toEqual(expected);
     expect(result.status).toBe(expected.length === 0 ? 'matched' : 'exception');
   });
@@ -130,7 +154,7 @@ describe('match_invoice', () => {
   it('uses the price tolerance the server was started with', async () => {
     await client.close();
     await connect(10);
-    const result = (await call('match_invoice', { invoiceId: 'INV-1003' })).json();
+    const result = (await call('match_invoice', { invoiceId: 'INV-1003' })).data;
     expect(result).toMatchObject({ status: 'matched', priceTolerancePct: 10 });
   });
 });
@@ -139,7 +163,7 @@ describe('request_approval', () => {
   const reason = 'Unit price for bolts is 8% above the PO; supplier needs to confirm.';
 
   it('creates a pending request with the exception codes the server found', async () => {
-    const result = (await call('request_approval', { invoiceId: 'INV-1003', reason })).json();
+    const result = (await call('request_approval', { invoiceId: 'INV-1003', reason })).data;
     expect(result).toEqual({
       created: true,
       approval: {
@@ -156,7 +180,7 @@ describe('request_approval', () => {
 
   it('returns the pending request when asked twice for the same invoice', async () => {
     await call('request_approval', { invoiceId: 'INV-1003', reason });
-    const second = (await call('request_approval', { invoiceId: 'INV-1003', reason, requestedBy: 'retrying-agent' })).json();
+    const second = (await call('request_approval', { invoiceId: 'INV-1003', reason, requestedBy: 'retrying-agent' })).data;
     expect(second).toMatchObject({ created: false, approval: { id: 'APR-0001', requestedBy: 'ai-agent' } });
     expect(approvals.list()).toHaveLength(1);
   });

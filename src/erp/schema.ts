@@ -5,13 +5,13 @@ import { z } from 'zod';
 // Money is stored in minor units (bani, cents) as integers, and all money arithmetic stays in integers.
 const minorUnits = z.number().int().nonnegative();
 const isoDate = z.iso.date();
-const currency = z.enum(['RON', 'EUR']);
+export const CurrencySchema = z.enum(['RON', 'EUR']);
 
 export const SupplierSchema = z.object({
   id: z.string().regex(/^SUP-\d{3}$/),
   name: z.string().min(1),
   country: z.string().length(2),
-  currency,
+  currency: CurrencySchema,
   paymentTermsDays: z.number().int().positive(),
 });
 
@@ -19,7 +19,7 @@ export const PurchaseOrderSchema = z.object({
   id: z.string().regex(/^PO-\d{4}-\d{4}$/),
   supplierId: z.string(),
   orderDate: isoDate,
-  currency,
+  currency: CurrencySchema,
   status: z.enum(['open', 'closed']),
   lines: z
     .array(
@@ -58,7 +58,7 @@ export const InvoiceSchema = z.object({
   supplierInvoiceNumber: z.string().min(1),
   invoiceDate: isoDate,
   dueDate: isoDate,
-  currency,
+  currency: CurrencySchema,
   status: InvoiceStatusSchema,
   lines: z
     .array(
@@ -79,7 +79,7 @@ export const ErpDataSchema = z.object({
   invoices: z.array(InvoiceSchema),
 });
 
-export type Currency = z.infer<typeof currency>;
+export type Currency = z.infer<typeof CurrencySchema>;
 export type Supplier = z.infer<typeof SupplierSchema>;
 export type PurchaseOrder = z.infer<typeof PurchaseOrderSchema>;
 export type GoodsReceipt = z.infer<typeof GoodsReceiptSchema>;
