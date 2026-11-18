@@ -111,7 +111,7 @@ To use your own data, set `ERP_DATA_FILE` to the absolute path of a JSON file wi
 
 ### Send approvals to a real dashboard
 
-By default, approval requests stay in memory. Point the server at the [approvals platform](https://github.com/RomulusMirauta/approvals-platform) and they land in its exception queue, where an approver accepts or rejects them:
+By default, approval requests stay in memory. Point the server at the [approvals platform](https://github.com/RomulusMirauta/approvals-platform) ([live demo](https://approvals-platform-eta.vercel.app)) and they land in its exception queue, where an approver accepts or rejects them:
 
 ```bash
 claude mcp add erp-procurement   -e APPROVALS_API_URL=http://localhost:3000   -e APPROVALS_API_EMAIL=erp-agent@example.com   -e APPROVALS_API_PASSWORD=demo-password   -- node /absolute/path/to/erp-procurement-mcp/dist/index.js
