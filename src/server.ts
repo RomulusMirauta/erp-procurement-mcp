@@ -4,7 +4,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import type { ApprovalStore } from './approvals/store.js';
-import { DEFAULT_PRICE_TOLERANCE_PCT, isAwaitingDecision, matchInvoice } from './erp/matching.js';
+import { DEFAULT_PRICE_TOLERANCE_PCT, exceptionDetails, isAwaitingDecision, matchInvoice } from './erp/matching.js';
 import { lineTotalMinor, money } from './erp/money.js';
 import type { ErpRepository } from './erp/repository.js';
 import { InvoiceStatusSchema } from './erp/schema.js';
@@ -210,6 +210,7 @@ export function createServer({
         reason,
         requestedBy,
         exceptionCodes: match.exceptions.map((exception) => exception.code),
+        exceptions: exceptionDetails(match.exceptions),
         invoiceTotal: money(lineTotalMinor(invoice.lines), invoice.currency),
         supplierName: repository.getSupplier(invoice.supplierId)?.name ?? invoice.supplierId,
       });

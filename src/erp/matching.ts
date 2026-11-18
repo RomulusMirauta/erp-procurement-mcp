@@ -18,7 +18,27 @@ export type ExceptionCode = (typeof EXCEPTION_CODES)[number];
 export interface MatchException {
   code: ExceptionCode;
   lineNo?: number;
+  // How far past the rule, in whole numbers: for PRICE_VARIANCE the unit price difference from the PO in minor units
+  // (either way, so a free-of-charge line needs no division), for the quantity checks the units billed beyond what was
+  // received or ordered. Absent where there is nothing to measure (supplier, currency, duplicate, line not on the PO).
+  excess?: number;
   message: string;
+}
+
+// An exception as an approval request records it: what the approver saw, without the message.
+export type ExceptionDetail = Omit<MatchException, 'message'>;
+
+// One entry per code and line, in the order found. The same PO line can appear on several invoice lines, and each
+// can raise the same exception; the entry keeps the largest excess.
+export function exceptionDetails(exceptions: readonly MatchException[]): ExceptionDetail[] {
+  const byKey = new Map<string, ExceptionDetail>();
+  for (const { code, lineNo, excess } of exceptions) {
+    const key = `${code}:${lineNo ?? ''}`;
+    const known = byKey.get(key);
+    if (!known) byKey.set(key, { code, ...(lineNo !== undefined && { lineNo }), ...(excess !== undefined && { excess }) });
+    else if (excess !== undefined && (known.excess === undefined || excess > known.excess)) known.excess = excess;
+  }
+  return [...byKey.values()];
 }
 
 export interface MatchResult {
@@ -110,6 +130,7 @@ export function matchInvoice(
       exceptions.push({
         code: 'PRICE_VARIANCE',
         lineNo: line.lineNo,
+        excess: Math.abs(line.unitPriceMinor - poLine.unitPriceMinor),
         message: `Unit price ${difference} (tolerance ±${priceTolerancePct}%).`,
       });
     }
@@ -128,12 +149,14 @@ export function matchInvoice(
       exceptions.push({
         code: 'QUANTITY_EXCEEDS_PO',
         lineNo: line.lineNo,
+        excess: alreadyInvoiced + billedHere - poLine.quantity,
         message: `Invoiced ${billedHere}, but only ${poLine.quantity} ordered and ${alreadyInvoiced} already invoiced.`,
       });
     } else if (alreadyInvoiced + billedHere > received) {
       exceptions.push({
         code: 'QUANTITY_NOT_RECEIVED',
         lineNo: line.lineNo,
+        excess: alreadyInvoiced + billedHere - received,
         message: `Invoiced ${billedHere}, but only ${received} received and ${alreadyInvoiced} already invoiced.`,
       });
     }

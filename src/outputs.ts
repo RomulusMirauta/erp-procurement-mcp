@@ -32,6 +32,11 @@ const MatchResultSchema = z.object({
     z.object({
       code: ExceptionCodeSchema,
       lineNo: z.number().int().optional(),
+      excess: z
+        .number()
+        .int()
+        .optional()
+        .describe('How far past the rule: unit price difference in minor units, or units billed over what was received or ordered'),
       message: z.string(),
     }),
   ),
