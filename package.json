@@ -25,7 +25,9 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "inspect": "npx @modelcontextprotocol/inspector node dist/index.js"
+    "inspect": "npx @modelcontextprotocol/inspector node dist/index.js",
+    "smoke": "bash scripts/inspector-smoke.sh",
+    "evals": "npm run build && tsx evals/run.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",

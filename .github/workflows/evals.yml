@@ -1,0 +1,33 @@
+name: Agent evals
+
+# Runs real agent scenarios through Claude Code against the built server (see evals/). Manual only: each run calls
+# the Claude API and costs a few cents. Needs an ANTHROPIC_API_KEY repository secret; without it the job skips.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evals:
+    name: Agent evals
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - name: Skip without an API key
+        if: env.ANTHROPIC_API_KEY == ''
+        run: echo "::notice::ANTHROPIC_API_KEY secret is not set, so the agent evals were skipped."
+      - uses: actions/checkout@v7
+        if: env.ANTHROPIC_API_KEY != ''
+      - uses: actions/setup-node@v7
+        if: env.ANTHROPIC_API_KEY != ''
+        with:
+          node-version: 24
+          cache: npm
+      - if: env.ANTHROPIC_API_KEY != ''
+        run: npm ci
+      - if: env.ANTHROPIC_API_KEY != ''
+        run: npm install --global @anthropic-ai/claude-code@2.1.81
+      - if: env.ANTHROPIC_API_KEY != ''
+        run: npm run evals
