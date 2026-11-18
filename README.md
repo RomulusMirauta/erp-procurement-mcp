@@ -21,8 +21,8 @@ Most invoices pass, so this check suits an agent. The ones that don't pass need 
 |---|---|---|
 | `search_invoices` | Lists invoices, soonest due first. Filters: status, supplier (id or part of the name), due date. Paginated. | yes |
 | `get_invoice` | One invoice with its supplier, purchase order and goods receipts. | yes |
-| `match_invoice` | Runs the three-way match and returns `matched` or the list of exceptions. Price tolerance is adjustable (default ±2%). | yes |
-| `request_approval` | Sends a failed invoice to a person. Re-checks the invoice itself, refuses invoices that match, and returns the existing request on a retry. | no |
+| `match_invoice` | Runs the three-way match and returns `matched` or the list of exceptions. | yes |
+| `request_approval` | Sends a failed invoice to a person. Re-checks the invoice itself, refuses invoices that match or are already paid, and returns the existing request on a retry. | no |
 
 ### Exceptions the match finds
 
@@ -32,8 +32,9 @@ Most invoices pass, so this check suits an agent. The ones that don't pass need 
 | `CURRENCY_MISMATCH` | The invoice currency differs from the PO (prices are then not compared). |
 | `DUPLICATE_INVOICE` | The same supplier already sent an invoice with this number. |
 | `LINE_NOT_ON_PO` | The invoice bills something that was never ordered. |
-| `PRICE_VARIANCE` | A unit price is outside the tolerance. |
-| `QUANTITY_NOT_RECEIVED` | More is billed than was received minus what earlier invoices already billed. |
+| `PRICE_VARIANCE` | A unit price is outside the tolerance (±2% by default, set by `ERP_PRICE_TOLERANCE_PCT`). |
+| `QUANTITY_EXCEEDS_PO` | More is billed than was ordered, counting what approved and paid invoices already billed. |
+| `QUANTITY_NOT_RECEIVED` | More is billed than was received, counting what approved and paid invoices already billed. |
 
 The sample data in [data/erp-sample.json](data/erp-sample.json) has one invoice for each case (INV-1001 to INV-1009), and the tests check all of them.
 
@@ -42,7 +43,7 @@ The sample data in [data/erp-sample.json](data/erp-sample.json) has one invoice 
 > **You:** Check the invoices from Somes that are still waiting and flag anything wrong.
 >
 > **Claude:** *calls `search_invoices` with supplier "somes", then `match_invoice` for each.*
-> INV-1004 matches (the grease is 1.5% above the PO price, inside the 2% tolerance). INV-1005 bills 80 bearings, but all 120 received were already billed on INV-1003, so the remaining 80 haven't arrived yet. I've sent it for approval as APR-0001.
+> INV-1004 matches (the grease is 1.5% above the PO price, inside the 2% tolerance). INV-1005 bills 150 bearings, but only 120 have arrived so far. I've sent it for approval as APR-0001.
 
 ## Use it with Claude
 
@@ -76,7 +77,7 @@ claude mcp add erp-procurement -- node /absolute/path/to/erp-procurement-mcp/dis
 
 **MCP Inspector**, to call the tools by hand: `npm run inspect`.
 
-To use your own data, set `ERP_DATA_FILE` to a JSON file with the same shape as the sample (see [.env.example](.env.example)). The server checks it at startup and refuses to start on bad data.
+To use your own data, set `ERP_DATA_FILE` to the absolute path of a JSON file with the same shape as the sample. To change the price tolerance, set `ERP_PRICE_TOLERANCE_PCT` (see [.env.example](.env.example)). The server checks both at startup and refuses to start on bad values.
 
 ## How it's built
 
@@ -103,7 +104,9 @@ tests/
 - **The data is validated like a database would validate it.** zod checks the shape and types. `checkIntegrity` then checks what foreign keys and unique constraints would: every PO points to a real supplier, receipts only receive lines that are on the PO, and ids are unique.
 - **Expected failures are tool results, not exceptions.** An unknown invoice id returns `isError: true` with a message that tells the model what to do next (use `search_invoices`). The model reads it and corrects itself, instead of the call failing with a protocol error.
 - **The server doesn't trust the agent.** `request_approval` re-runs the match itself and records the exception codes it found, not the ones the agent claimed. A matched invoice can't be sent for approval.
-- **Writes are idempotent.** Agents retry. A second `request_approval` for the same invoice returns the pending request instead of creating a duplicate.
+- **The agent can't loosen the rules.** The price tolerance is finance policy, set when the server starts. It is deliberately not a tool argument, so a prompt-injected invoice can't talk the agent into a looser check.
+- **Only approved and paid invoices use up quantity.** Pending invoices, including wrong ones, don't block a correct invoice. Once one of two competing invoices is approved, the other fails its next check. For duplicates, approved and paid invoices always count as earlier, so a backdated copy of a paid invoice is still caught.
+- **Writes are idempotent.** Agents retry. A second `request_approval` for the same invoice returns the pending request instead of creating a duplicate. The store is in memory, so this holds within one server process. The approvals platform will enforce it with a unique constraint in the database.
 - **Tool annotations** (`readOnlyHint`, `idempotentHint`) tell the client which calls are safe to run without asking the user.
 - **stdio transport, logs on stderr.** stdout carries the protocol, so a stray `console.log` would corrupt it.
 
