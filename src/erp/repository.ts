@@ -1,7 +1,17 @@
-// Read-only access to the ERP data, loaded once from a JSON file.
+// Access to the ERP data, loaded once from a JSON file. The only write is recording a person's decision on an
+// invoice (status and decision); it lives in memory, like the rest of the mock ERP, and is lost on restart.
 import { readFile } from 'node:fs/promises';
-import { isSettled } from './matching.js';
-import { ErpDataSchema, type ErpData, type GoodsReceipt, type Invoice, type PurchaseOrder, type Supplier } from './schema.js';
+import { isSettled, type MatchContext } from './matching.js';
+import {
+  ErpDataSchema,
+  type ErpData,
+  type GoodsReceipt,
+  type Invoice,
+  type InvoiceDecision,
+  type InvoiceStatus,
+  type PurchaseOrder,
+  type Supplier,
+} from './schema.js';
 
 export class ErpDataError extends Error {
   override name = 'ErpDataError';
@@ -114,5 +124,25 @@ export class ErpRepository {
     return this.data.invoices.filter(
       (other) => other.id !== invoice.id && other.status !== 'rejected' && comesBefore(other, invoice),
     );
+  }
+
+  // Everything matchInvoice needs to check this invoice.
+  matchContext(invoice: Invoice): MatchContext {
+    const purchaseOrder = this.getPurchaseOrder(invoice.poId);
+    // The integrity checks guarantee this; failing loudly beats matching against nothing.
+    if (!purchaseOrder) throw new Error(`${invoice.id} references missing purchase order ${invoice.poId}`);
+    return { purchaseOrder, receipts: this.receiptsFor(purchaseOrder.id), priorInvoices: this.priorInvoices(invoice) };
+  }
+
+  // Records a decision. Rows are replaced, never edited in place, so an invoice a caller already holds keeps
+  // the values it had when it was read.
+  setDecision(id: string, status: InvoiceStatus, decision: InvoiceDecision): Invoice {
+    const index = this.data.invoices.findIndex((invoice) => invoice.id === id);
+    const current = this.data.invoices[index];
+    if (!current) throw new Error(`Invoice ${id} does not exist`);
+    const updated: Invoice = { ...current, status, decision };
+    this.data.invoices[index] = updated;
+    this.invoices.set(id, updated);
+    return updated;
   }
 }
