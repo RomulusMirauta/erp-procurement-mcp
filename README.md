@@ -79,6 +79,16 @@ The agent did the checking; the two decisions went to a person.
 
 Requires Node.js 22.12 or newer.
 
+**From npm** (no clone needed):
+
+```bash
+claude mcp add erp-procurement -- npx -y erp-procurement-mcp
+```
+
+Releases are published from GitHub Actions with npm Trusted Publishing, so each version carries signed provenance linking it to the commit and workflow that built it ([release.yml](.github/workflows/release.yml)).
+
+**From source:**
+
 ```bash
 git clone https://github.com/RomulusMirauta/erp-procurement-mcp.git
 cd erp-procurement-mcp

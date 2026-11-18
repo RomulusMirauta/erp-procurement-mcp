@@ -2,6 +2,25 @@
   "name": "erp-procurement-mcp",
   "version": "0.2.0",
   "description": "MCP server that lets AI agents query a mock ERP, run three-way invoice matching and route exceptions to human approval.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "mcp-server",
+    "ai-agents",
+    "erp",
+    "procurement",
+    "three-way-match",
+    "invoice",
+    "human-in-the-loop"
+  ],
+  "homepage": "https://github.com/RomulusMirauta/erp-procurement-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/RomulusMirauta/erp-procurement-mcp/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RomulusMirauta/erp-procurement-mcp.git"
+  },
   "author": "Romulus Mirăuță (https://github.com/RomulusMirauta)",
   "license": "MIT",
   "type": "module",
@@ -15,6 +34,10 @@
   "engines": {
     "node": ">=22.12"
   },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/index.js",
@@ -27,7 +50,8 @@
     "test:watch": "vitest",
     "inspect": "npx @modelcontextprotocol/inspector node dist/index.js",
     "smoke": "bash scripts/inspector-smoke.sh",
-    "evals": "npm run build && tsx evals/run.ts"
+    "evals": "npm run build && tsx evals/run.ts",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
