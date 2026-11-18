@@ -134,7 +134,7 @@
       "currency": "RON",
       "status": "received",
       "lines": [
-        { "lineNo": 1, "description": "Ball bearing 6204-2RS", "quantity": 80, "unitPriceMinor": 1850 }
+        { "lineNo": 1, "description": "Ball bearing 6204-2RS", "quantity": 150, "unitPriceMinor": 1850 }
       ]
     },
     {

@@ -15,7 +15,13 @@ export const SERVER_VERSION = '0.1.0';
 export interface ServerDeps {
   repository: ErpRepository;
   approvals: ApprovalStore;
+  // A finance policy set by whoever runs the server, not a tool argument: an agent must not be able to
+  // loosen the rules it is checking against.
+  priceTolerancePct?: number;
 }
+
+// Only invoices still waiting for a decision can be sent for one.
+const AWAITING_DECISION = new Set<Invoice['status']>(['received', 'on_hold']);
 
 const invoiceId = z
   .string()
@@ -41,7 +47,11 @@ function matchContext(repository: ErpRepository, invoice: Invoice): MatchContext
   };
 }
 
-export function createServer({ repository, approvals }: ServerDeps): McpServer {
+export function createServer({
+  repository,
+  approvals,
+  priceTolerancePct = DEFAULT_PRICE_TOLERANCE_PCT,
+}: ServerDeps): McpServer {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
 
   server.registerTool(
@@ -122,19 +132,12 @@ export function createServer({ repository, approvals }: ServerDeps): McpServer {
       title: 'Three-way match an invoice',
       description:
         'Checks an invoice against its purchase order and goods receipts: supplier, currency, duplicate invoice number, ' +
-        'lines on the PO, unit price within tolerance and quantity actually received. Returns "matched" or a list of exceptions.',
-      inputSchema: {
-        invoiceId,
-        priceTolerancePct: z
-          .number()
-          .min(0)
-          .max(20)
-          .default(DEFAULT_PRICE_TOLERANCE_PCT)
-          .describe(`Allowed unit price difference from the PO, in percent (default ${DEFAULT_PRICE_TOLERANCE_PCT})`),
-      },
+        'lines on the PO, unit price within the tolerance set by finance, quantity ordered and quantity received. ' +
+        'Returns "matched" or a list of exceptions.',
+      inputSchema: { invoiceId },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    ({ invoiceId: id, priceTolerancePct }) => {
+    ({ invoiceId: id }) => {
       const invoice = repository.getInvoice(id);
       if (!invoice) return unknownInvoice(id);
       return ok({
@@ -149,8 +152,9 @@ export function createServer({ repository, approvals }: ServerDeps): McpServer {
     {
       title: 'Request human approval',
       description:
-        'Sends an invoice that failed three-way matching to a person for approval. Only invoices with exceptions are ' +
-        'accepted. Calling it again for the same invoice returns the pending request instead of creating a second one.',
+        'Sends an invoice that failed three-way matching to a person for approval. Only received or on-hold invoices ' +
+        'with exceptions are accepted. Calling it again for the same invoice returns the pending request instead of ' +
+        'creating a second one.',
       inputSchema: {
         invoiceId,
         reason: z
@@ -166,12 +170,15 @@ export function createServer({ repository, approvals }: ServerDeps): McpServer {
     ({ invoiceId: id, reason, requestedBy }) => {
       const invoice = repository.getInvoice(id);
       if (!invoice) return unknownInvoice(id);
+      if (!AWAITING_DECISION.has(invoice.status)) {
+        return fail(`Invoice ${id} is ${invoice.status}; only received or on-hold invoices can be sent for approval.`);
+      }
 
       const existing = approvals.findPending(id);
       if (existing) return ok({ created: false, approval: existing });
 
       // The server re-checks the invoice itself instead of trusting the agent's claim that it failed.
-      const match = matchInvoice(invoice, matchContext(repository, invoice));
+      const match = matchInvoice(invoice, matchContext(repository, invoice), priceTolerancePct);
       if (match.status === 'matched') {
         return fail(`Invoice ${id} passes three-way matching, so it needs no approval.`);
       }

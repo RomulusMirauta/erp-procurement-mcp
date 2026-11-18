@@ -11,13 +11,17 @@ import { createServer } from '../src/server.js';
 let client: Client;
 let approvals: InMemoryApprovalStore;
 
-beforeEach(async () => {
+async function connect(priceTolerancePct?: number) {
   const repository = await ErpRepository.fromFile(new URL('../data/erp-sample.json', import.meta.url));
   approvals = new InMemoryApprovalStore(() => new Date('2026-11-18T09:00:00Z'));
-  const server = createServer({ repository, approvals });
+  const server = createServer({ repository, approvals, ...(priceTolerancePct === undefined ? {} : { priceTolerancePct }) });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   client = new Client({ name: 'test-client', version: '1.0.0' });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+}
+
+beforeEach(async () => {
+  await connect();
 });
 
 afterEach(async () => {
@@ -45,7 +49,8 @@ describe('tool list', () => {
     const { tools } = await client.listTools();
     const match = tools.find((tool) => tool.name === 'match_invoice');
     expect(match?.inputSchema.required).toEqual(['invoiceId']);
-    expect(match?.inputSchema.properties).toHaveProperty('priceTolerancePct');
+    // The price tolerance is finance policy set on the server, so the agent cannot loosen it.
+    expect(match?.inputSchema.properties).not.toHaveProperty('priceTolerancePct');
   });
 });
 
@@ -108,7 +113,7 @@ describe('match_invoice', () => {
   // Every invoice in the sample data exists to show one case.
   it.each([
     ['INV-1001', []],
-    ['INV-1002', ['DUPLICATE_INVOICE', 'QUANTITY_NOT_RECEIVED', 'QUANTITY_NOT_RECEIVED']],
+    ['INV-1002', ['DUPLICATE_INVOICE', 'QUANTITY_EXCEEDS_PO', 'QUANTITY_EXCEEDS_PO']],
     ['INV-1003', ['PRICE_VARIANCE']],
     ['INV-1004', []],
     ['INV-1005', ['QUANTITY_NOT_RECEIVED']],
@@ -122,8 +127,10 @@ describe('match_invoice', () => {
     expect(result.status).toBe(expected.length === 0 ? 'matched' : 'exception');
   });
 
-  it('applies a custom price tolerance', async () => {
-    const result = (await call('match_invoice', { invoiceId: 'INV-1003', priceTolerancePct: 10 })).json();
+  it('uses the price tolerance the server was started with', async () => {
+    await client.close();
+    await connect(10);
+    const result = (await call('match_invoice', { invoiceId: 'INV-1003' })).json();
     expect(result).toMatchObject({ status: 'matched', priceTolerancePct: 10 });
   });
 });
@@ -158,6 +165,11 @@ describe('request_approval', () => {
     const result = await call('request_approval', { invoiceId: 'INV-1004', reason });
     expect(result).toMatchObject({ isError: true, text: expect.stringContaining('needs no approval') });
     expect(approvals.list()).toHaveLength(0);
+  });
+
+  it('refuses an invoice that is already paid or approved', async () => {
+    const result = await call('request_approval', { invoiceId: 'INV-1001', reason });
+    expect(result).toMatchObject({ isError: true, text: expect.stringContaining('is paid') });
   });
 
   it('refuses an unknown invoice', async () => {
