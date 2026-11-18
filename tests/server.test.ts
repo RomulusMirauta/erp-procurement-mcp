@@ -1,5 +1,6 @@
 // Drives the real MCP server through the SDK client over an in-memory transport:
 // the same protocol messages Claude sends, without starting a process.
+import { readFile } from 'node:fs/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
@@ -37,6 +38,13 @@ async function call(name: string, args: Record<string, unknown> = {}) {
   const text = first?.type === 'text' ? first.text : '';
   return { isError: result.isError ?? false, text, data: result.structuredContent as Record<string, any> };
 }
+
+describe('server info', () => {
+  it('reports the package version', async () => {
+    const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
+    expect(client.getServerVersion()?.version).toBe(version);
+  });
+});
 
 describe('tool list', () => {
   it('exposes the four tools with read-only hints on the queries', async () => {
