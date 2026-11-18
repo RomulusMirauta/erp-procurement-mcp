@@ -1,0 +1,195 @@
+{
+  "suppliers": [
+    { "id": "SUP-001", "name": "Carpathian Office Supplies SRL", "country": "RO", "currency": "RON", "paymentTermsDays": 30 },
+    { "id": "SUP-002", "name": "Somes Industrial Components SRL", "country": "RO", "currency": "RON", "paymentTermsDays": 45 },
+    { "id": "SUP-003", "name": "Brandt Elektrotechnik GmbH", "country": "DE", "currency": "EUR", "paymentTermsDays": 30 },
+    { "id": "SUP-004", "name": "Napoca Freight SRL", "country": "RO", "currency": "RON", "paymentTermsDays": 15 }
+  ],
+  "purchaseOrders": [
+    {
+      "id": "PO-2026-0001",
+      "supplierId": "SUP-001",
+      "orderDate": "2026-09-01",
+      "currency": "RON",
+      "status": "closed",
+      "lines": [
+        { "lineNo": 1, "sku": "PAP-A4-80", "description": "A4 copy paper 80 g, box of 5 reams", "quantity": 40, "unitPriceMinor": 12900 },
+        { "lineNo": 2, "sku": "TON-59A", "description": "Laser toner cartridge 59A", "quantity": 10, "unitPriceMinor": 45000 }
+      ]
+    },
+    {
+      "id": "PO-2026-0002",
+      "supplierId": "SUP-002",
+      "orderDate": "2026-09-05",
+      "currency": "RON",
+      "status": "open",
+      "lines": [
+        { "lineNo": 1, "sku": "BRG-6204", "description": "Ball bearing 6204-2RS", "quantity": 200, "unitPriceMinor": 1850 },
+        { "lineNo": 2, "sku": "BLT-M8-40", "description": "Hex bolt M8x40, box of 100", "quantity": 50, "unitPriceMinor": 3200 }
+      ]
+    },
+    {
+      "id": "PO-2026-0003",
+      "supplierId": "SUP-003",
+      "orderDate": "2026-09-10",
+      "currency": "EUR",
+      "status": "open",
+      "lines": [
+        { "lineNo": 1, "sku": "PLC-1214C", "description": "PLC controller CPU 1214C", "quantity": 4, "unitPriceMinor": 41500 },
+        { "lineNo": 2, "sku": "HMI-7IN", "description": "7-inch HMI touch panel", "quantity": 4, "unitPriceMinor": 62000 }
+      ]
+    },
+    {
+      "id": "PO-2026-0004",
+      "supplierId": "SUP-004",
+      "orderDate": "2026-09-15",
+      "currency": "RON",
+      "status": "open",
+      "lines": [
+        { "lineNo": 1, "sku": "FRT-CLJ-BUC", "description": "Full truck freight, Cluj-Napoca to Bucharest", "quantity": 6, "unitPriceMinor": 380000 }
+      ]
+    },
+    {
+      "id": "PO-2026-0005",
+      "supplierId": "SUP-002",
+      "orderDate": "2026-10-01",
+      "currency": "RON",
+      "status": "open",
+      "lines": [
+        { "lineNo": 1, "sku": "GRS-LI2", "description": "Lithium grease, 1 kg", "quantity": 30, "unitPriceMinor": 5400 }
+      ]
+    }
+  ],
+  "goodsReceipts": [
+    { "id": "GR-0001", "poId": "PO-2026-0001", "receivedDate": "2026-09-08", "lines": [{ "lineNo": 1, "quantityReceived": 40 }, { "lineNo": 2, "quantityReceived": 10 }] },
+    { "id": "GR-0002", "poId": "PO-2026-0002", "receivedDate": "2026-09-12", "lines": [{ "lineNo": 1, "quantityReceived": 120 }, { "lineNo": 2, "quantityReceived": 50 }] },
+    { "id": "GR-0003", "poId": "PO-2026-0003", "receivedDate": "2026-09-24", "lines": [{ "lineNo": 1, "quantityReceived": 4 }, { "lineNo": 2, "quantityReceived": 4 }] },
+    { "id": "GR-0004", "poId": "PO-2026-0004", "receivedDate": "2026-09-20", "lines": [{ "lineNo": 1, "quantityReceived": 3 }] },
+    { "id": "GR-0005", "poId": "PO-2026-0004", "receivedDate": "2026-10-05", "lines": [{ "lineNo": 1, "quantityReceived": 3 }] },
+    { "id": "GR-0006", "poId": "PO-2026-0005", "receivedDate": "2026-10-08", "lines": [{ "lineNo": 1, "quantityReceived": 30 }] }
+  ],
+  "invoices": [
+    {
+      "id": "INV-1001",
+      "supplierId": "SUP-001",
+      "poId": "PO-2026-0001",
+      "supplierInvoiceNumber": "COS-2026-0417",
+      "invoiceDate": "2026-09-09",
+      "dueDate": "2026-10-09",
+      "currency": "RON",
+      "status": "paid",
+      "lines": [
+        { "lineNo": 1, "description": "A4 copy paper 80 g, box of 5 reams", "quantity": 40, "unitPriceMinor": 12900 },
+        { "lineNo": 2, "description": "Laser toner cartridge 59A", "quantity": 10, "unitPriceMinor": 45000 }
+      ]
+    },
+    {
+      "id": "INV-1002",
+      "supplierId": "SUP-001",
+      "poId": "PO-2026-0001",
+      "supplierInvoiceNumber": "COS-2026-0417",
+      "invoiceDate": "2026-09-20",
+      "dueDate": "2026-10-20",
+      "currency": "RON",
+      "status": "received",
+      "lines": [
+        { "lineNo": 1, "description": "A4 copy paper 80 g, box of 5 reams", "quantity": 40, "unitPriceMinor": 12900 },
+        { "lineNo": 2, "description": "Laser toner cartridge 59A", "quantity": 10, "unitPriceMinor": 45000 }
+      ]
+    },
+    {
+      "id": "INV-1003",
+      "supplierId": "SUP-002",
+      "poId": "PO-2026-0002",
+      "supplierInvoiceNumber": "SIC-88213",
+      "invoiceDate": "2026-09-13",
+      "dueDate": "2026-10-28",
+      "currency": "RON",
+      "status": "on_hold",
+      "lines": [
+        { "lineNo": 1, "description": "Ball bearing 6204-2RS", "quantity": 120, "unitPriceMinor": 1850 },
+        { "lineNo": 2, "description": "Hex bolt M8x40, box of 100", "quantity": 40, "unitPriceMinor": 3456 }
+      ]
+    },
+    {
+      "id": "INV-1004",
+      "supplierId": "SUP-002",
+      "poId": "PO-2026-0005",
+      "supplierInvoiceNumber": "SIC-88502",
+      "invoiceDate": "2026-10-09",
+      "dueDate": "2026-11-23",
+      "currency": "RON",
+      "status": "received",
+      "lines": [
+        { "lineNo": 1, "description": "Lithium grease, 1 kg", "quantity": 30, "unitPriceMinor": 5481 }
+      ]
+    },
+    {
+      "id": "INV-1005",
+      "supplierId": "SUP-002",
+      "poId": "PO-2026-0002",
+      "supplierInvoiceNumber": "SIC-88340",
+      "invoiceDate": "2026-09-25",
+      "dueDate": "2026-11-09",
+      "currency": "RON",
+      "status": "received",
+      "lines": [
+        { "lineNo": 1, "description": "Ball bearing 6204-2RS", "quantity": 80, "unitPriceMinor": 1850 }
+      ]
+    },
+    {
+      "id": "INV-1006",
+      "supplierId": "SUP-003",
+      "poId": "PO-2026-0003",
+      "supplierInvoiceNumber": "BE-2026-1193",
+      "invoiceDate": "2026-09-25",
+      "dueDate": "2026-10-25",
+      "currency": "EUR",
+      "status": "received",
+      "lines": [
+        { "lineNo": 1, "description": "PLC controller CPU 1214C", "quantity": 4, "unitPriceMinor": 41500 },
+        { "lineNo": 2, "description": "7-inch HMI touch panel", "quantity": 4, "unitPriceMinor": 62000 },
+        { "lineNo": 3, "description": "On-site commissioning fee", "quantity": 1, "unitPriceMinor": 85000 }
+      ]
+    },
+    {
+      "id": "INV-1007",
+      "supplierId": "SUP-004",
+      "poId": "PO-2026-0004",
+      "supplierInvoiceNumber": "NF-5521",
+      "invoiceDate": "2026-09-21",
+      "dueDate": "2026-10-06",
+      "currency": "RON",
+      "status": "approved",
+      "lines": [
+        { "lineNo": 1, "description": "Full truck freight, Cluj-Napoca to Bucharest", "quantity": 3, "unitPriceMinor": 380000 }
+      ]
+    },
+    {
+      "id": "INV-1008",
+      "supplierId": "SUP-004",
+      "poId": "PO-2026-0004",
+      "supplierInvoiceNumber": "NF-5609",
+      "invoiceDate": "2026-10-06",
+      "dueDate": "2026-10-21",
+      "currency": "EUR",
+      "status": "received",
+      "lines": [
+        { "lineNo": 1, "description": "Full truck freight, Cluj-Napoca to Bucharest", "quantity": 3, "unitPriceMinor": 76500 }
+      ]
+    },
+    {
+      "id": "INV-1009",
+      "supplierId": "SUP-001",
+      "poId": "PO-2026-0002",
+      "supplierInvoiceNumber": "COS-2026-0533",
+      "invoiceDate": "2026-09-30",
+      "dueDate": "2026-10-30",
+      "currency": "RON",
+      "status": "received",
+      "lines": [
+        { "lineNo": 2, "description": "Hex bolt M8x40, box of 100", "quantity": 10, "unitPriceMinor": 3200 }
+      ]
+    }
+  ]
+}
