@@ -45,6 +45,16 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 // These point at possible fraud, so the approver should see them first.
 const HIGH_PRIORITY: ReadonlySet<ExceptionCode> = new Set(['DUPLICATE_INVOICE', 'SUPPLIER_MISMATCH']);
 
+// The platform refuses metadata over 10 KB of JSON. The per-line detail grows with the invoice, so when it would not
+// fit it is left out: the request still reaches the approver, and an approval of it holds the invoice (applyDecision).
+const MAX_METADATA_CHARS = 10_000;
+
+function metadataFor({ exceptionCodes, exceptions, requestedBy, supplierName }: NewApprovalRequest): Record<string, unknown> {
+  const withDetail = { exceptionCodes, exceptions, requestedBy, supplier: supplierName };
+  if (JSON.stringify(withDetail).length <= MAX_METADATA_CHARS) return withDetail;
+  return { exceptionCodes, requestedBy, supplier: supplierName };
+}
+
 // Only the fields this store reads. The response comes over the network, so it is checked, not trusted.
 const LoginResponse = z.object({ token: z.string() });
 const CreateResponse = z.object({
@@ -64,9 +74,18 @@ const RequestDetail = RequestSummary.extend({
   status: z.enum(APPROVAL_STATUSES),
   createdAt: z.string(),
   decidedAt: z.string().nullable(),
-  metadata: z.object({ exceptionCodes: z.array(z.string()).optional() }).loose(),
+  metadata: z.object({ exceptionCodes: z.array(z.string()).optional(), exceptions: z.unknown().optional() }).loose(),
   decisions: z.array(z.object({ approver: z.object({ name: z.string() }), comment: z.string() })),
 });
+// What the approver saw (metadata.exceptions), as submit() writes it. Metadata is free-form on the platform, so it is
+// read strictly: anything off and the detail is dropped as a whole, never half-read.
+const ExceptionDetails = z.array(
+  z.object({
+    code: z.enum(EXCEPTION_CODES),
+    lineNo: z.number().int().positive().optional(),
+    excess: z.number().int().nonnegative().optional(),
+  }),
+);
 const Problem = z.object({ title: z.string(), detail: z.string().optional() }).loose();
 
 // Request ids on the platform are UUIDs. Anything else can't be one, and must not reach the URL path.
@@ -117,11 +136,7 @@ export class HttpApprovalStore implements ApprovalStore {
       externalRef: request.invoiceId,
       amount: { amountMinor: request.invoiceTotal.amountMinor, currency: request.invoiceTotal.currency },
       tags: ['finance', ...kinds.map((code) => code.toLowerCase().replaceAll('_', '-'))],
-      metadata: {
-        exceptionCodes: request.exceptionCodes,
-        requestedBy: request.requestedBy,
-        supplier: request.supplierName,
-      },
+      metadata: metadataFor(request),
     };
     const { created, request: saved } = CreateResponse.parse(await this.post('/v1/requests', body));
     return {
@@ -160,12 +175,14 @@ export class HttpApprovalStore implements ApprovalStore {
     if (detail.source !== SOURCE || detail.externalRef !== invoiceId) return undefined;
 
     const decision = detail.decisions.at(-1);
+    const exceptions = ExceptionDetails.safeParse(detail.metadata.exceptions);
     return {
       id: detail.id,
       invoiceId,
       status: detail.status,
       // Only codes this server knows: metadata is free-form on the platform.
       exceptionCodes: (detail.metadata.exceptionCodes ?? []).filter((code): code is ExceptionCode => KNOWN_CODES.has(code)),
+      ...(exceptions.success && { exceptions: exceptions.data }),
       comment: decision ? decision.comment : null,
       decidedBy: decision ? decision.approver.name : null,
       decidedAt: detail.decidedAt === null ? null : iso(detail.decidedAt),

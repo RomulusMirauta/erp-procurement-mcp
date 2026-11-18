@@ -105,21 +105,39 @@ type Answer = { status: number; body: Record<string, unknown>; headers?: Record<
 const answer = (status: number, body: Record<string, unknown>, headers?: Record<string, string>): Answer => ({ status, body, headers });
 const ignored = (reason: string) => answer(200, { status: 'ignored', reason });
 
+// The connection closed, or the request was answered (http.ts's timeout sends a 503), before the whole body arrived.
+class BodyNotRead extends Error {
+  override name = 'BodyNotRead';
+}
+
 // Reads the raw bytes, up to the limit: the signature covers exactly what was sent, so the body is not parsed first.
 // Past the limit it stops keeping chunks and resolves at once; the rest is read and dropped, so the client still
-// gets its 413 instead of a reset connection.
-function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer | undefined> {
+// gets its 413 instead of a reset connection. Once the response is closed (sent by the timeout, or the client left)
+// it rejects: after a 503 Node emits nothing more on the request, so a stalled sender would otherwise leave this
+// promise, and the handler, waiting forever.
+function readBody(req: IncomingMessage, res: ServerResponse, maxBytes: number): Promise<Buffer | undefined> {
   if (Number(req.headers['content-length'] ?? 0) > maxBytes) return Promise.resolve(undefined);
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
-    req.on('data', (chunk: Buffer) => {
+    const onData = (chunk: Buffer) => {
       size += chunk.length;
-      if (size > maxBytes) resolve(undefined);
+      if (size > maxBytes) settle(() => resolve(undefined));
       else chunks.push(chunk);
-    });
-    req.on('end', () => resolve(size > maxBytes ? undefined : Buffer.concat(chunks)));
-    req.on('error', reject);
+    };
+    const onEnd = () => settle(() => resolve(size > maxBytes ? undefined : Buffer.concat(chunks)));
+    const onError = (error: Error) => settle(() => reject(error));
+    const onClose = () => {
+      if (!req.readableEnded) settle(() => reject(new BodyNotRead('Request closed before its body was read')));
+    };
+    // The error listener stays: a request that errors later, with no listener left, would throw.
+    const settle = (done: () => void) => {
+      req.off('data', onData).off('end', onEnd).off('close', onClose);
+      res.off('close', onClose);
+      done();
+    };
+    req.on('data', onData).on('end', onEnd).on('error', onError).on('close', onClose);
+    res.on('close', onClose);
   });
 }
 
@@ -136,7 +154,7 @@ export function createWebhookHandler({ deps, secret, maxBodyBytes = MAX_BODY_BYT
     if (processed.size > MAX_REMEMBERED_IDS) processed.delete(processed.values().next().value as string);
   };
 
-  async function handle(req: IncomingMessage): Promise<Answer> {
+  async function handle(req: IncomingMessage, res: ServerResponse): Promise<Answer> {
     if (req.method !== 'POST') return answer(405, { error: 'Method not allowed' }, { Allow: 'POST' });
 
     const id = header(req, 'webhook-id');
@@ -149,7 +167,7 @@ export function createWebhookHandler({ deps, secret, maxBodyBytes = MAX_BODY_BYT
       return answer(400, { error: 'webhook-id is too long or webhook-timestamp is not unix seconds' });
     }
 
-    const body = await readBody(req, maxBodyBytes);
+    const body = await readBody(req, res, maxBodyBytes);
     if (!body) return answer(413, { error: `Body over ${maxBodyBytes} bytes` });
 
     // Checked before the signature is computed: cheap, and the timestamp is covered by the signature anyway.
@@ -192,6 +210,7 @@ export function createWebhookHandler({ deps, secret, maxBodyBytes = MAX_BODY_BYT
 
     const { approvals, repository, priceTolerancePct } = deps;
     let approval;
+    let latest;
     try {
       approval = await approvals.find({ invoiceId, approvalId: payload.requestId });
       if (approval?.status === 'pending' && approvals.recordDecision) {
@@ -204,6 +223,8 @@ export function createWebhookHandler({ deps, secret, maxBodyBytes = MAX_BODY_BYT
           decidedAt: new Date(payload.decidedAt).toISOString(),
         });
       }
+      // Only the newest request for the invoice decides it (see applyDecision).
+      if (approval) latest = await approvals.find({ invoiceId });
     } catch (error) {
       if (!(error instanceof ApprovalsApiError)) throw error;
       console.error('Approvals webhook: cannot read the request from the approvals API:', error.message);
@@ -213,16 +234,18 @@ export function createWebhookHandler({ deps, secret, maxBodyBytes = MAX_BODY_BYT
     // The store of record must agree: a request already decided the other way keeps its first decision.
     if (approval.status !== payload.decision) return ignored(`Approval request is ${approval.status}`);
 
-    const outcome = applyDecision(repository, approval, priceTolerancePct);
+    const outcome = applyDecision(repository, approval, { latestApprovalId: latest?.id, priceTolerancePct });
+    if (outcome.result === 'ignored') return ignored(outcome.reason);
     return answer(200, { status: 'applied', result: outcome.result, invoiceId, invoiceStatus: outcome.invoice.status });
   }
 
   return async (req, res) => {
     let result: Answer;
     try {
-      result = await handle(req);
+      result = await handle(req, res);
     } catch (error) {
-      console.error('Error handling approvals webhook:', error);
+      // A sender that stopped halfway has already had its answer, or is gone: nothing to log.
+      if (!(error instanceof BodyNotRead)) console.error('Error handling approvals webhook:', error);
       result = answer(500, { error: 'Internal server error' });
     }
     if (res.headersSent) return;

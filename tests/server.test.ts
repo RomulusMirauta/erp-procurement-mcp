@@ -199,6 +199,12 @@ describe('request_approval', () => {
     });
   });
 
+  it('records what the approver will see per line, with how far past the rule it is', async () => {
+    await call('request_approval', { invoiceId: 'INV-1003', reason });
+    // Line 2 bills 34.56 against the PO's 32.00.
+    expect(approvals.list()[0]?.exceptions).toEqual([{ code: 'PRICE_VARIANCE', lineNo: 2, excess: 256 }]);
+  });
+
   it('returns the pending request when asked twice for the same invoice', async () => {
     await call('request_approval', { invoiceId: 'INV-1003', reason });
     const second = (await call('request_approval', { invoiceId: 'INV-1003', reason, requestedBy: 'retrying-agent' })).data;
@@ -239,7 +245,7 @@ describe('get_approval_status', () => {
       decidedBy: 'Ana Pop',
       decidedAt: '2026-11-18T10:00:00.000Z',
     });
-    applyDecision(repository, approval!);
+    applyDecision(repository, approval!, { latestApprovalId: approval!.id });
   };
 
   it('reports a pending request with the invoice still on hold', async () => {

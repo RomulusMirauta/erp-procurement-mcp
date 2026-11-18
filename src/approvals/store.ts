@@ -1,7 +1,7 @@
 // Approval requests: the human-in-the-loop step. An agent finds an exception, a person decides.
 // Two stores implement the same interface: in memory (the default, for trying the server out) and the
 // approvals platform's REST API (http-store.ts), where people review requests in a dashboard.
-import type { ExceptionCode } from '../erp/matching.js';
+import type { ExceptionCode, ExceptionDetail } from '../erp/matching.js';
 import type { Money } from '../erp/money.js';
 
 // The approvals platform's request statuses. A person approves or rejects; the requester can cancel.
@@ -23,6 +23,9 @@ export interface NewApprovalRequest {
   invoiceId: string;
   reason: string;
   exceptionCodes: ExceptionCode[];
+  // The same exceptions per code and line, with how far past the rule each one is (exceptionDetails). An approval is
+  // checked against them before it is applied.
+  exceptions: ExceptionDetail[];
   requestedBy: string;
   // Context for the approver; the in-memory store doesn't need it.
   invoiceTotal: Money;
@@ -41,6 +44,9 @@ export interface ApprovalRecord {
   status: ApprovalStatus;
   // The exceptions the server found when the request was raised: what the person saw when deciding.
   exceptionCodes: ExceptionCode[];
+  // The same per code and line, with how far past the rule each was. Undefined when the request doesn't record it
+  // (raised before this server recorded it, or unreadable): an approval of it then holds the invoice.
+  exceptions?: ExceptionDetail[];
   // The approver's comment and name, null until someone decides.
   comment: string | null;
   decidedBy: string | null;
@@ -82,8 +88,18 @@ interface StoredRequest extends ApprovalRecord {
 
 // Copies, so a caller can't change the store's rows.
 function toRecord(stored: StoredRequest): ApprovalRecord {
-  const { id, invoiceId, status, exceptionCodes, comment, decidedBy, decidedAt, createdAt } = stored;
-  return { id, invoiceId, status, exceptionCodes: [...exceptionCodes], comment, decidedBy, decidedAt, createdAt };
+  const { id, invoiceId, status, exceptionCodes, exceptions, comment, decidedBy, decidedAt, createdAt } = stored;
+  return {
+    id,
+    invoiceId,
+    status,
+    exceptionCodes: [...exceptionCodes],
+    ...(exceptions && { exceptions: exceptions.map((exception) => ({ ...exception })) }),
+    comment,
+    decidedBy,
+    decidedAt,
+    createdAt,
+  };
 }
 
 function toRequest(stored: StoredRequest): ApprovalRequest {
@@ -96,7 +112,7 @@ export class InMemoryApprovalStore implements ApprovalStore {
 
   constructor(private readonly now: () => Date = () => new Date()) {}
 
-  async submit({ invoiceId, reason, exceptionCodes, requestedBy }: NewApprovalRequest): Promise<SubmitResult> {
+  async submit({ invoiceId, reason, exceptionCodes, exceptions, requestedBy }: NewApprovalRequest): Promise<SubmitResult> {
     const pending = this.requests.find((request) => request.invoiceId === invoiceId && request.status === 'pending');
     if (pending) return { created: false, approval: toRequest(pending) };
 
@@ -105,6 +121,7 @@ export class InMemoryApprovalStore implements ApprovalStore {
       invoiceId,
       reason,
       exceptionCodes,
+      exceptions: exceptions.map((exception) => ({ ...exception })),
       requestedBy,
       status: 'pending',
       comment: null,

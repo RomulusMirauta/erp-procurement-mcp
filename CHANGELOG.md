@@ -25,9 +25,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - The approvals API client retries network errors, timeouts, `429` and `5xx` (3 attempts, exponential backoff with jitter, honouring `Retry-After`), never other `4xx`.
 - The `LINE_NOT_ON_PO` message names the line number only; the supplier's description is no longer quoted in it.
+- `match_invoice` exceptions carry an `excess` where there is something to measure: the unit price difference in minor units for `PRICE_VARIANCE`, the units billed beyond what was received or ordered for the quantity checks.
+- Approval requests record what the approver saw per exception and line, with its `excess` (`metadata.exceptions` on the approvals platform).
 
 ### Fixed
 
+- A stale approval could still approve an invoice for payment when the exception codes were unchanged but an exception had moved to another line or grown (a larger price variance, a larger over-bill). An approval now counts only for exceptions on the same line and no larger than when the request was raised; anything else, or a request without that record, keeps the invoice on hold.
+- A decision on an older approval request (its delivery retried after the agent raised a new request for the same invoice) was applied; it is now ignored as superseded.
+- The webhook receiver kept waiting for the body of a sender that stalled after the request timed out.
 - The server reported version 0.1.0 to clients instead of the package version.
 
 See [FINDINGS.md](FINDINGS.md) for how the bugs were found.

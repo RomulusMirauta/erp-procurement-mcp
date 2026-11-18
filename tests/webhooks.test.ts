@@ -3,9 +3,10 @@
 // tests post to a real node:http server, signing each body the way the approvals platform does.
 import { createHmac } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { connect, type AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { InMemoryApprovalStore } from '../src/approvals/store.js';
+import { exceptionDetails, matchInvoice } from '../src/erp/matching.js';
 import { ErpRepository } from '../src/erp/repository.js';
 import { createHttpHandler, type HttpOptions } from '../src/http.js';
 import { readWebhookSecret, verifyWebhookSignature } from '../src/webhooks.js';
@@ -79,6 +80,8 @@ describe('verifyWebhookSignature', () => {
 let server: Server | undefined;
 let repository: ErpRepository;
 let approvals: InMemoryApprovalStore;
+// Requests whose handler has not finished yet.
+let inFlight = 0;
 
 afterEach(async () => {
   if (!server) return;
@@ -98,7 +101,11 @@ async function start(options: Partial<HttpOptions> = {}, secret: string | null =
     now: () => NOW * 1000,
     ...options,
   });
-  server = createServer((req, res) => void handler(req, res));
+  inFlight = 0;
+  server = createServer((req, res) => {
+    inFlight++;
+    void handler(req, res).finally(() => inFlight--);
+  });
   await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', resolve));
   return new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}/webhooks/approvals`);
 }
@@ -159,13 +166,16 @@ function decided(decision: 'approved' | 'rejected', payload: Record<string, unkn
 }
 
 const reason = 'Unit price on line 2 is 8% above the PO; please confirm with the supplier.';
+// What request_approval sends: the exceptions matching finds now.
 const requestApproval = (invoiceId: string) => {
   const invoice = repository.getInvoice(invoiceId)!;
+  const { exceptions } = matchInvoice(invoice, repository.matchContext(invoice));
   return approvals.submit({
     invoiceId,
     reason,
     requestedBy: 'ai-agent',
-    exceptionCodes: invoiceId === 'INV-1003' ? ['PRICE_VARIANCE'] : ['QUANTITY_NOT_RECEIVED'],
+    exceptionCodes: exceptions.map((exception) => exception.code),
+    exceptions: exceptionDetails(exceptions),
     invoiceTotal: { amountMinor: 0, currency: invoice.currency, formatted: '' },
     supplierName: 'Somes',
   });
@@ -229,6 +239,21 @@ describe('POST /webhooks/approvals: authentication', () => {
     const url = await start({ maxWebhookBodyBytes: 512 });
     const body = decided('approved', { comment: 'x'.repeat(1024) });
     expect((await deliver(url, { body })).status).toBe(413);
+  });
+
+  it('stops waiting for the body of a sender that stalls, once the request has timed out', async () => {
+    const url = await start({ requestTimeoutMs: 50 });
+    // Announces 100 bytes, sends 5 and then nothing, without closing the connection.
+    const socket = connect(Number(url.port), url.hostname);
+    socket.write(
+      `POST ${url.pathname} HTTP/1.1\r\nHost: ${url.host}\r\nwebhook-id: msg_1\r\nwebhook-timestamp: ${NOW}\r\n` +
+        'webhook-signature: v1,AAAA\r\ncontent-type: application/json\r\ncontent-length: 100\r\n\r\n{"id"',
+    );
+    const response = await new Promise<string>((resolve) => socket.once('data', (chunk) => resolve(chunk.toString())));
+    expect(response).toMatch(/^HTTP\/1\.1 503/);
+    // The 503 has gone out; the handler must not keep waiting for the rest of the body.
+    await expect.poll(() => inFlight, { timeout: 1000 }).toBe(0);
+    socket.destroy();
   });
 
   // The sender retries anything but 2xx, and a signed body that can't be used won't get better on a retry.
@@ -347,6 +372,29 @@ describe('POST /webhooks/approvals: applying decisions', () => {
     expect(invoice?.decision?.note).toMatch(/approval again/);
     // The approval request itself still says what the person decided.
     expect((await approvals.find({ invoiceId: 'INV-1005' }))?.status).toBe('approved');
+  });
+
+  it('ignores an approval whose request a newer one for the same invoice has superseded', async () => {
+    const url = await start();
+    await requestApproval('INV-1003');
+    // APR-0001 is approved, but the delivery fails and the sender will retry it. Meanwhile the agent sees the request
+    // is no longer pending and raises APR-0002 for the same invoice.
+    await approvals.recordDecision({
+      approvalId: 'APR-0001',
+      invoiceId: 'INV-1003',
+      decision: 'approved',
+      comment: null,
+      decidedBy: 'Ana Pop',
+      decidedAt: '2026-11-18T10:00:00.000Z',
+    });
+    expect((await requestApproval('INV-1003')).approval.id).toBe('APR-0002');
+    // The retried delivery of APR-0001 arrives.
+    expect(await deliver(url)).toEqual({ status: 200, body: { status: 'ignored', reason: expect.stringMatching(/superseded/i) } });
+    expect(repository.getInvoice('INV-1003')).toMatchObject({ status: 'on_hold' });
+    expect(repository.getInvoice('INV-1003')?.decision).toBeUndefined();
+    // The newer request's own decision is applied.
+    const newer = await deliver(url, { id: 'msg_2', body: decided('approved', { requestId: 'APR-0002' }) });
+    expect(newer.body).toMatchObject({ status: 'applied', result: 'approved' });
   });
 
   it('ignores a conflicting decision for a request that was already decided', async () => {

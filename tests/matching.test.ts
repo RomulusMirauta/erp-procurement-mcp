@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { matchInvoice, type MatchContext } from '../src/erp/matching.js';
+import { exceptionDetails, matchInvoice, type MatchContext } from '../src/erp/matching.js';
 import type { GoodsReceipt, Invoice, PurchaseOrder } from '../src/erp/schema.js';
 
 const po: PurchaseOrder = {
@@ -210,6 +210,62 @@ describe('matchInvoice', () => {
       'SUPPLIER_MISMATCH',
       'PRICE_VARIANCE',
       'QUANTITY_EXCEEDS_PO',
+    ]);
+  });
+
+  // How far past the rule each exception is, so an approval can be checked against what its approver saw.
+  describe('excess', () => {
+    const partial: GoodsReceipt = { ...fullReceipt, lines: [{ lineNo: 1, quantityReceived: 60 }, { lineNo: 2, quantityReceived: 10 }] };
+
+    it('is the unit price difference in minor units, either way, also on a free-of-charge line', () => {
+      const lines = [
+        { lineNo: 1, description: 'Widget', quantity: 100, unitPriceMinor: 1400 },
+        { lineNo: 2, description: 'Gadget', quantity: 10, unitPriceMinor: 4500 },
+      ];
+      expect(matchInvoice(invoice({ lines }), context()).exceptions).toEqual([
+        expect.objectContaining({ code: 'PRICE_VARIANCE', lineNo: 1, excess: 400 }),
+        expect.objectContaining({ code: 'PRICE_VARIANCE', lineNo: 2, excess: 500 }),
+      ]);
+      const free: PurchaseOrder = { ...po, lines: [{ lineNo: 1, sku: 'S', description: 'Sample', quantity: 1, unitPriceMinor: 0 }] };
+      const sample = invoice({ lines: [{ lineNo: 1, description: 'Sample', quantity: 1, unitPriceMinor: 500 }] });
+      const receipt: GoodsReceipt = { ...fullReceipt, lines: [{ lineNo: 1, quantityReceived: 1 }] };
+      expect(matchInvoice(sample, context({ purchaseOrder: free, receipts: [receipt] })).exceptions).toEqual([
+        expect.objectContaining({ code: 'PRICE_VARIANCE', excess: 500 }),
+      ]);
+    });
+
+    it('is the quantity billed beyond what was received or ordered, counting settled invoices', () => {
+      const paid = invoice({ id: 'INV-1000', supplierInvoiceNumber: 'S-0', status: 'paid', lines: [{ lineNo: 1, description: 'Widget', quantity: 50, unitPriceMinor: 1000 }] });
+      const lines = [
+        { lineNo: 1, description: 'Widget', quantity: 20, unitPriceMinor: 1000 },
+        { lineNo: 2, description: 'Gadget', quantity: 13, unitPriceMinor: 5000 },
+      ];
+      expect(matchInvoice(invoice({ lines }), context({ receipts: [partial], priorInvoices: [paid] })).exceptions).toEqual([
+        expect.objectContaining({ code: 'QUANTITY_NOT_RECEIVED', lineNo: 1, excess: 10 }),
+        expect.objectContaining({ code: 'QUANTITY_EXCEEDS_PO', lineNo: 2, excess: 3 }),
+      ]);
+    });
+
+    it('is left out where there is nothing to measure', () => {
+      const result = matchInvoice(invoice({ supplierId: 'SUP-009' }), context());
+      expect(result.exceptions[0]).not.toHaveProperty('excess');
+    });
+  });
+});
+
+describe('exceptionDetails', () => {
+  it('keeps one entry per code and line, with the largest excess', () => {
+    const partial: GoodsReceipt = { ...fullReceipt, lines: [{ lineNo: 1, quantityReceived: 60 }] };
+    // Line 1 twice on the invoice: 40 is within the 60 received, 40 + 40 is 20 over.
+    const lines = [
+      { lineNo: 1, description: 'Widget', quantity: 40, unitPriceMinor: 1100 },
+      { lineNo: 1, description: 'Widget', quantity: 40, unitPriceMinor: 1300 },
+    ];
+    const result = matchInvoice(invoice({ supplierId: 'SUP-009', lines }), context({ receipts: [partial] }));
+    expect(exceptionDetails(result.exceptions)).toEqual([
+      { code: 'SUPPLIER_MISMATCH' },
+      { code: 'PRICE_VARIANCE', lineNo: 1, excess: 300 },
+      { code: 'QUANTITY_NOT_RECEIVED', lineNo: 1, excess: 20 },
     ]);
   });
 });
