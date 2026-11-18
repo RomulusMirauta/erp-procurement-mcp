@@ -36,3 +36,8 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      # Starts the built server over stdio and over HTTP and calls it with the MCP Inspector CLI, as a client would.
+      # Git Bash on Windows, so the same script runs everywhere.
+      - name: MCP Inspector smoke test
+        shell: bash
+        run: bash scripts/inspector-smoke.sh
