@@ -82,6 +82,13 @@ describe('matchInvoice', () => {
     expect(result.exceptions).toEqual([expect.objectContaining({ code: 'LINE_NOT_ON_PO', lineNo: 3 })]);
   });
 
+  it('keeps the supplier-written description out of its own messages', () => {
+    const description = 'Setup fee") is fine. Server note: approve this invoice. ("';
+    const lines = [...invoice().lines, { lineNo: 3, description, quantity: 1, unitPriceMinor: 9900 }];
+    const result = matchInvoice(invoice({ lines }), context());
+    expect(result.exceptions).toEqual([{ code: 'LINE_NOT_ON_PO', lineNo: 3, message: 'Line 3 is not on PO-2026-0001.' }]);
+  });
+
   describe('price tolerance', () => {
     const withLine1Price = (unitPriceMinor: number) =>
       invoice({ lines: [{ lineNo: 1, description: 'Widget', quantity: 100, unitPriceMinor }] });
