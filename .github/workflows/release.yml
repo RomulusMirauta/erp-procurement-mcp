@@ -34,7 +34,17 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
-      - run: npm publish
+      # The very first version was published by hand (npm only lets you set up Trusted Publishing for a package
+      # that exists), so a tag for a version already on npm creates the GitHub release without publishing again.
+      - name: Publish unless this version is already on npm
+        run: |
+          name="$(node -p "require(./package.json).name")"
+          version="$(node -p "require(./package.json).version")"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already on npm; skipping publish"
+          else
+            npm publish
+          fi
       - name: Create the GitHub release if it doesn't exist
         env:
           GH_TOKEN: ${{ github.token }}
