@@ -18,3 +18,11 @@ An independent review found the issues below. All were reproduced with a script 
 | 8 | Low | `request_approval` accepted invoices that were already paid, approved or rejected. | Only `received` and `on_hold` invoices are accepted. |
 
 Known limitation, documented in the README rather than fixed: approval idempotency holds within one server process, because the store is in memory.
+
+## 2026-11-18: resilience of the approvals API client
+
+The approvals platform runs on Vercel and Neon, which suspends an idle database, so its first request after a quiet spell can answer `503` with `Retry-After`.
+
+| Severity | Finding | Fix |
+|---|---|---|
+| Medium | `HttpApprovalStore` gave up on the first network error, timeout, `429` or `5xx`, so a cold start on the platform failed the agent's `request_approval` call. | Up to 3 attempts with exponential backoff and jitter, honouring `Retry-After` (capped at 10 s). Other `4xx` are not retried. Safe because `POST /v1/requests` is idempotent per `(source, externalRef)`: a repeat returns the request the first attempt created. |

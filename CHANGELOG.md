@@ -6,6 +6,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Changed
+
+- The approvals API client retries network errors, timeouts, `429` and `5xx` (3 attempts, exponential backoff with jitter, honouring `Retry-After`), never other `4xx`.
+
 ## [0.2.0] - 2026-11-18
 
 ### Added

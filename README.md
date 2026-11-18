@@ -119,6 +119,8 @@ claude mcp add erp-procurement   -e APPROVALS_API_URL=http://localhost:3000   -e
 
 The server signs in with an account that has the `agent` role, sends each request with the invoice amount, supplier and exception codes, and marks duplicates and supplier mismatches as high priority. The platform allows one pending request per invoice, so a retry returns the existing request, even across server restarts.
 
+That idempotency is also what makes automatic retries safe: network errors, timeouts, `429` and `5xx` (for example the platform's `503` while its database wakes up) are retried up to 3 attempts in total, waiting as long as `Retry-After` asks (at most 10 s) or backing off exponentially with jitter. Other `4xx` answers are not retried, and an expired token still triggers one fresh sign-in.
+
 ## Run it remotely (HTTP)
 
 The same tools can be served over [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http), so the server can run on another machine and several clients can share it. Every client must send a shared secret as a bearer token.

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { ApprovalsApiError, HttpApprovalStore } from '../src/approvals/http-store.js';
 import type { NewApprovalRequest } from '../src/approvals/store.js';
 import { money } from '../src/erp/money.js';
@@ -9,8 +9,8 @@ interface Call {
   body: any;
 }
 
-// A fake fetch that answers from a queue of responses and records every call.
-function fakeFetch(...responses: Array<[number, unknown] | Error>) {
+// A fake fetch that answers from a queue of responses (status, body, optional headers) and records every call.
+function fakeFetch(...responses: Array<[number, unknown, Record<string, string>?] | Error>) {
   const calls: Call[] = [];
   const fetch = (async (url: string, init: RequestInit) => {
     const headers = init.headers as Record<string, string>;
@@ -18,8 +18,8 @@ function fakeFetch(...responses: Array<[number, unknown] | Error>) {
     const next = responses.shift();
     if (!next) throw new Error('unexpected request');
     if (next instanceof Error) throw next;
-    const [status, json] = next;
-    return new Response(JSON.stringify(json), { status, headers: { 'content-type': 'application/json' } });
+    const [status, json, extraHeaders] = next;
+    return new Response(JSON.stringify(json), { status, headers: { 'content-type': 'application/json', ...extraHeaders } });
   }) as typeof globalThis.fetch;
   return { fetch, calls };
 }
@@ -42,8 +42,17 @@ const request: NewApprovalRequest = {
   supplierName: 'Carpathian Office Supplies SRL',
 };
 
+// Retries don't really wait in tests; the delays they would have waited are recorded instead.
+let delays: number[] = [];
+beforeEach(() => {
+  delays = [];
+});
+const sleep = async (ms: number) => {
+  delays.push(ms);
+};
+
 const store = (fetch: typeof globalThis.fetch) =>
-  new HttpApprovalStore({ baseUrl: 'http://api.test/', email: 'agent@example.com', password: 'secret', fetch });
+  new HttpApprovalStore({ baseUrl: 'http://api.test/', email: 'agent@example.com', password: 'secret', fetch, sleep });
 
 describe('HttpApprovalStore', () => {
   it('signs in, then creates the request with the details an approver needs', async () => {
@@ -139,7 +148,69 @@ describe('HttpApprovalStore', () => {
   });
 
   it('fails clearly when the API is down', async () => {
-    const { fetch } = fakeFetch(new TypeError('fetch failed'));
-    await expect(store(fetch).submit(request)).rejects.toThrow('Approvals API at http://api.test is unreachable: fetch failed');
+    const down = new TypeError('fetch failed');
+    const { fetch, calls } = fakeFetch(down, down, down);
+    await expect(store(fetch).submit(request)).rejects.toThrow(
+      'Approvals API at http://api.test is unreachable after 3 attempts: fetch failed',
+    );
+    expect(calls).toHaveLength(3);
+  });
+});
+
+describe('HttpApprovalStore retries', () => {
+  const unavailable = (headers?: Record<string, string>): [number, unknown, Record<string, string>?] => [
+    503,
+    { title: 'Service Unavailable', detail: 'The service is temporarily unavailable' },
+    headers,
+  ];
+
+  it('retries network errors and 5xx, then succeeds', async () => {
+    const { fetch, calls } = fakeFetch(login('t1'), new TypeError('fetch failed'), unavailable(), created(true));
+    const result = await store(fetch).submit(request);
+    expect(result.created).toBe(true);
+    // The same request body each time: the API's idempotency on (source, externalRef) makes that safe.
+    expect(calls.slice(1).map((call) => call.body.externalRef)).toEqual(['INV-1002', 'INV-1002', 'INV-1002']);
+    // Exponential backoff with jitter: within [base/2, base] for 500 ms, then 1 s.
+    expect(delays).toHaveLength(2);
+    expect(delays[0]).toBeGreaterThanOrEqual(250);
+    expect(delays[0]).toBeLessThanOrEqual(500);
+    expect(delays[1]).toBeGreaterThanOrEqual(500);
+    expect(delays[1]).toBeLessThanOrEqual(1000);
+  });
+
+  it("waits as long as the server's Retry-After asks", async () => {
+    const { fetch } = fakeFetch(login('t1'), [429, { title: 'Too Many Requests' }, { 'retry-after': '2' }], created(true));
+    await store(fetch).submit(request);
+    expect(delays).toEqual([2000]);
+  });
+
+  it('caps a long Retry-After so a tool call is not left hanging', async () => {
+    const { fetch } = fakeFetch(login('t1'), unavailable({ 'retry-after': '3600' }), created(true));
+    await store(fetch).submit(request);
+    expect(delays).toEqual([10_000]);
+  });
+
+  it('gives up after 3 attempts with the last error', async () => {
+    const { fetch, calls } = fakeFetch(login('t1'), unavailable(), unavailable(), unavailable());
+    await expect(store(fetch).submit(request)).rejects.toThrow(
+      new ApprovalsApiError('Approvals API /v1/requests failed with 503 (Service Unavailable: The service is temporarily unavailable)'),
+    );
+    expect(calls).toHaveLength(4);
+  });
+
+  it.each([
+    [400, 'Bad Request'],
+    [409, 'Conflict'],
+  ])('does not retry a %i: the request itself is wrong', async (status, title) => {
+    const { fetch, calls } = fakeFetch(login('t1'), [status, { title }]);
+    await expect(store(fetch).submit(request)).rejects.toThrow(`failed with ${status}`);
+    expect(calls).toHaveLength(2);
+    expect(delays).toEqual([]);
+  });
+
+  it('still signs in again on a 401 after a retried 503', async () => {
+    const { fetch, calls } = fakeFetch(login('old'), unavailable(), [401, { title: 'Unauthorized' }], login('new'), created(true));
+    await store(fetch).submit(request);
+    expect(calls.map((call) => call.authorization)).toEqual([undefined, 'Bearer old', 'Bearer old', undefined, 'Bearer new']);
   });
 });
