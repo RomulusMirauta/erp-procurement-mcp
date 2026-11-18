@@ -22,7 +22,7 @@ import {
 } from './outputs.js';
 
 export const SERVER_NAME = 'erp-procurement';
-export const SERVER_VERSION = '0.2.0';
+export const SERVER_VERSION = '0.3.0';
 
 export interface ServerDeps {
   repository: ErpRepository;
