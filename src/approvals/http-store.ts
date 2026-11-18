@@ -45,15 +45,17 @@ export class HttpApprovalStore implements ApprovalStore {
   }
 
   async submit(request: NewApprovalRequest): Promise<SubmitResult> {
+    // The same code can occur on several invoice lines; the title and tags name each kind once.
+    const kinds = [...new Set(request.exceptionCodes)];
     const body = {
-      title: `${request.invoiceId}: ${request.exceptionCodes.join(', ')}`,
+      title: `${request.invoiceId}: ${kinds.join(', ')}`,
       description: request.reason,
       type: 'invoice_exception',
-      priority: request.exceptionCodes.some((code) => HIGH_PRIORITY.has(code)) ? 'high' : 'normal',
+      priority: kinds.some((code) => HIGH_PRIORITY.has(code)) ? 'high' : 'normal',
       source: SOURCE,
       externalRef: request.invoiceId,
       amount: { amountMinor: request.invoiceTotal.amountMinor, currency: request.invoiceTotal.currency },
-      tags: ['finance', ...request.exceptionCodes.map((code) => code.toLowerCase().replaceAll('_', '-'))],
+      tags: ['finance', ...kinds.map((code) => code.toLowerCase().replaceAll('_', '-'))],
       metadata: {
         exceptionCodes: request.exceptionCodes,
         requestedBy: request.requestedBy,

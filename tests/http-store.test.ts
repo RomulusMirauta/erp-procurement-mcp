@@ -81,6 +81,16 @@ describe('HttpApprovalStore', () => {
     });
   });
 
+  it('names each exception kind once when several lines share it', async () => {
+    const { fetch, calls } = fakeFetch(login('t1'), created(true));
+    await store(fetch).submit({ ...request, exceptionCodes: ['DUPLICATE_INVOICE', 'QUANTITY_EXCEEDS_PO', 'QUANTITY_EXCEEDS_PO'] });
+    expect(calls[1]!.body).toMatchObject({
+      title: 'INV-1002: DUPLICATE_INVOICE, QUANTITY_EXCEEDS_PO',
+      tags: ['finance', 'duplicate-invoice', 'quantity-exceeds-po'],
+      metadata: { exceptionCodes: ['DUPLICATE_INVOICE', 'QUANTITY_EXCEEDS_PO', 'QUANTITY_EXCEEDS_PO'] },
+    });
+  });
+
   it('uses normal priority when nothing points at fraud', async () => {
     const { fetch, calls } = fakeFetch(login('t1'), created(true));
     await store(fetch).submit({ ...request, exceptionCodes: ['PRICE_VARIANCE'] });
