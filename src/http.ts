@@ -5,6 +5,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { loadServerDeps } from './config.js';
+import { RateLimiter, type RateLimitOptions } from './rate-limit.js';
 import { createServer, type ServerDeps } from './server.js';
 
 export type HttpHandler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
@@ -15,9 +16,21 @@ export interface HttpOptions {
   authToken: string;
   // Browser origins allowed to call /mcp. Unset: any Origin passes, and the token is the only check.
   allowedOrigins?: string[];
+  // The defaults below suit an agent; tests pass small values.
+  maxBodyBytes?: number;
+  rateLimit?: RateLimitOptions;
+  requestTimeoutMs?: number;
 }
 
 const MIN_TOKEN_LENGTH = 32;
+// A tool call is a few hundred bytes of JSON-RPC, so 1 MiB leaves plenty of room and still stops a client from
+// making the server buffer a huge body. Larger bodies get 413.
+const MAX_BODY_BYTES = 1024 * 1024;
+// A burst of 60 requests, then one per second, per client. An agent checking a batch of invoices stays well within it.
+const RATE_LIMIT: RateLimitOptions = { capacity: 60, refillPerSecond: 1 };
+// Covers a slow upload as well as a slow tool. The longest tool call, request_approval against the approvals API,
+// gives up after 3 attempts of at most 10 s plus the waits between them, so 60 s leaves it room to finish.
+const REQUEST_TIMEOUT_MS = 60_000;
 
 export function readAuthToken(env: NodeJS.ProcessEnv = process.env): string {
   const token = env.MCP_AUTH_TOKEN ?? '';
@@ -50,8 +63,16 @@ function sendJson(res: ServerResponse, status: number, body: unknown, headers: R
 // Errors on /mcp use the JSON-RPC error shape, like the SDK's own responses.
 const rpcError = (message: string, code = -32000) => ({ jsonrpc: '2.0', error: { code, message }, id: null });
 
-export function createHttpHandler({ deps, authToken, allowedOrigins }: HttpOptions): HttpHandler {
+export function createHttpHandler({
+  deps,
+  authToken,
+  allowedOrigins,
+  maxBodyBytes = MAX_BODY_BYTES,
+  rateLimit = RATE_LIMIT,
+  requestTimeoutMs = REQUEST_TIMEOUT_MS,
+}: HttpOptions): HttpHandler {
   const expectedToken = digest(authToken);
+  const limiter = new RateLimiter(rateLimit);
 
   return async (req, res) => {
     const { pathname } = new URL(req.url ?? '/', 'http://localhost');
@@ -66,6 +87,14 @@ export function createHttpHandler({ deps, authToken, allowedOrigins }: HttpOptio
       return sendJson(res, 403, rpcError(`Origin ${origin} is not allowed`));
     }
 
+    // Before the token check, so guessing tokens is throttled too. Keyed by IP address, not by token: every client
+    // shares the one token, so a per-token bucket would be a single bucket for all of them. With per-user OAuth
+    // tokens, the user would be the better key. X-Forwarded-For is not used: any client can set it to anything.
+    const limit = limiter.take(req.socket.remoteAddress ?? 'unknown');
+    if (!limit.allowed) {
+      return sendJson(res, 429, rpcError('Too many requests'), { 'Retry-After': String(limit.retryAfterSeconds) });
+    }
+
     if (!isAuthorized(req.headers.authorization, expectedToken)) {
       return sendJson(res, 401, rpcError('Missing or invalid bearer token'), { 'WWW-Authenticate': 'Bearer' });
     }
@@ -76,8 +105,15 @@ export function createHttpHandler({ deps, authToken, allowedOrigins }: HttpOptio
     }
 
     const server = createServer(deps);
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    // The transport reads the body and answers 413 once it passes maxRequestBodySize, without buffering the rest.
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, maxRequestBodySize: maxBodyBytes });
+    // A client that sends its body slowly, or a tool that hangs, must not hold the request open forever.
+    const timeout = setTimeout(() => {
+      if (!res.headersSent) sendJson(res, 503, rpcError('Request timed out'));
+      else res.destroy();
+    }, requestTimeoutMs);
     res.on('close', () => {
+      clearTimeout(timeout);
       void transport.close();
       void server.close();
     });
