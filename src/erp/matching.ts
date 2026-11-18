@@ -42,6 +42,9 @@ export const DEFAULT_PRICE_TOLERANCE_PCT = 2;
 // Approved or paid: the company has committed to pay for these quantities.
 export const isSettled = (invoice: Invoice) => invoice.status === 'approved' || invoice.status === 'paid';
 
+// Received or on hold: no decision yet, so a person can still be asked for one, and a decision can still be applied.
+export const isAwaitingDecision = (invoice: Invoice) => invoice.status === 'received' || invoice.status === 'on_hold';
+
 const sumQuantity = <T>(rows: readonly T[], quantity: (row: T) => number) => rows.reduce((sum, row) => sum + quantity(row), 0);
 
 // Compares in integers (basis points), so a 7% tolerance means exactly 7%, and a PO price of 0 can't divide by zero.

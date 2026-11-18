@@ -50,6 +50,17 @@ export const GoodsReceiptSchema = z.object({
 
 export const InvoiceStatusSchema = z.enum(['received', 'on_hold', 'approved', 'rejected', 'paid']);
 
+// The last decision a person made on this invoice in the approvals platform, as applied by the server
+// (POST /webhooks/approvals). Absent until a decision arrives.
+export const InvoiceDecisionSchema = z.object({
+  approvalId: z.string().min(1),
+  decision: z.enum(['approved', 'rejected']),
+  decidedBy: z.string(),
+  decidedAt: z.iso.datetime(),
+  // What the server did with the decision, in its own words: never the approver's comment or ERP text.
+  note: z.string(),
+});
+
 export const InvoiceSchema = z.object({
   id: z.string().regex(/^INV-\d{4}$/),
   supplierId: z.string(),
@@ -60,6 +71,7 @@ export const InvoiceSchema = z.object({
   dueDate: isoDate,
   currency: CurrencySchema,
   status: InvoiceStatusSchema,
+  decision: InvoiceDecisionSchema.optional(),
   lines: z
     .array(
       z.object({
@@ -84,5 +96,6 @@ export type Supplier = z.infer<typeof SupplierSchema>;
 export type PurchaseOrder = z.infer<typeof PurchaseOrderSchema>;
 export type GoodsReceipt = z.infer<typeof GoodsReceiptSchema>;
 export type InvoiceStatus = z.infer<typeof InvoiceStatusSchema>;
+export type InvoiceDecision = z.infer<typeof InvoiceDecisionSchema>;
 export type Invoice = z.infer<typeof InvoiceSchema>;
 export type ErpData = z.infer<typeof ErpDataSchema>;

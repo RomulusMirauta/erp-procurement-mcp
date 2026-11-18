@@ -5,6 +5,7 @@ import { money } from '../src/erp/money.js';
 
 interface Call {
   url: string;
+  method: string;
   authorization: string | undefined;
   body: any;
 }
@@ -14,7 +15,12 @@ function fakeFetch(...responses: Array<[number, unknown, Record<string, string>?
   const calls: Call[] = [];
   const fetch = (async (url: string, init: RequestInit) => {
     const headers = init.headers as Record<string, string>;
-    calls.push({ url, authorization: headers.authorization, body: JSON.parse(init.body as string) });
+    calls.push({
+      url,
+      method: init.method ?? 'GET',
+      authorization: headers.authorization,
+      body: init.body === undefined ? undefined : JSON.parse(init.body as string),
+    });
     const next = responses.shift();
     if (!next) throw new Error('unexpected request');
     if (next instanceof Error) throw next;
@@ -212,5 +218,128 @@ describe('HttpApprovalStore retries', () => {
     const { fetch, calls } = fakeFetch(login('old'), unavailable(), [401, { title: 'Unauthorized' }], login('new'), created(true));
     await store(fetch).submit(request);
     expect(calls.map((call) => call.authorization)).toEqual([undefined, 'Bearer old', 'Bearer old', undefined, 'Bearer new']);
+  });
+});
+
+describe('HttpApprovalStore.find', () => {
+  const REQUEST_ID = '5b0c7a8e-2f3d-4e1a-9c6b-1d2e3f4a5b6c';
+  const OLDER_ID = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
+  const summary = (id: string, externalRef: string, status = 'approved') => ({
+    id,
+    title: `${externalRef}: PRICE_VARIANCE`,
+    type: 'invoice_exception',
+    status,
+    priority: 'normal',
+    source: 'erp-procurement-mcp',
+    externalRef,
+    amount: null,
+    requester: { id: OLDER_ID, name: 'ERP agent' },
+    tags: [],
+    createdAt: '2026-11-18T09:00:00+00:00',
+    updatedAt: '2026-11-18T10:00:00+00:00',
+    decidedAt: status === 'pending' ? null : '2026-11-18T10:00:00+00:00',
+  });
+  const detail = (changes: Record<string, unknown> = {}) => ({
+    ...summary(REQUEST_ID, 'INV-1003'),
+    description: 'reason',
+    metadata: { exceptionCodes: ['PRICE_VARIANCE'], requestedBy: 'claude', supplier: 'Somes' },
+    decisions: [
+      {
+        id: OLDER_ID,
+        approver: { id: OLDER_ID, name: 'Ana Pop' },
+        decision: 'approved',
+        comment: 'Supplier confirmed the new price list.',
+        createdAt: '2026-11-18T10:00:00+00:00',
+      },
+    ],
+    comments: [],
+    ...changes,
+  });
+  const page = (...items: unknown[]) => [200, { items, page: 1, pageSize: 100, total: items.length }] as [number, unknown];
+
+  it('finds the newest request for the invoice, then reads its decision', async () => {
+    // The list filter q matches the title or externalRef by substring, so the store keeps only exact matches.
+    const { fetch, calls } = fakeFetch(
+      login('t1'),
+      page(summary(OLDER_ID, 'INV-10031'), summary(REQUEST_ID, 'INV-1003'), summary(OLDER_ID, 'INV-1003', 'rejected')),
+      [200, detail()],
+    );
+    const record = await store(fetch).find({ invoiceId: 'INV-1003' });
+
+    expect(calls[1]).toMatchObject({ method: 'GET', authorization: 'Bearer t1', body: undefined });
+    const listUrl = new URL(calls[1]!.url);
+    expect(listUrl.pathname).toBe('/v1/requests');
+    expect(Object.fromEntries(listUrl.searchParams)).toEqual({ source: 'erp-procurement-mcp', q: 'INV-1003', pageSize: '100' });
+    expect(calls[2]).toMatchObject({ method: 'GET', url: `http://api.test/v1/requests/${REQUEST_ID}` });
+    expect(record).toEqual({
+      id: REQUEST_ID,
+      invoiceId: 'INV-1003',
+      status: 'approved',
+      exceptionCodes: ['PRICE_VARIANCE'],
+      comment: 'Supplier confirmed the new price list.',
+      decidedBy: 'Ana Pop',
+      decidedAt: '2026-11-18T10:00:00.000Z',
+      createdAt: '2026-11-18T09:00:00.000Z',
+    });
+  });
+
+  it('reads a request by id directly', async () => {
+    const { fetch, calls } = fakeFetch(login('t1'), [200, detail()]);
+    const record = await store(fetch).find({ invoiceId: 'INV-1003', approvalId: REQUEST_ID });
+    expect(calls.map((call) => call.url)).toEqual(['http://api.test/v1/auth/login', `http://api.test/v1/requests/${REQUEST_ID}`]);
+    expect(record?.status).toBe('approved');
+  });
+
+  it.each([
+    ['pending', [], null, null, null],
+    ['cancelled', [], null, null, '2026-11-18T10:00:00.000Z'],
+  ])('reports a %s request without a decision', async (status, decisions, comment, decidedBy, decidedAt) => {
+    const { fetch } = fakeFetch(login('t1'), [200, detail({ status, decisions, decidedAt })]);
+    expect(await store(fetch).find({ invoiceId: 'INV-1003', approvalId: REQUEST_ID })).toMatchObject({
+      status,
+      comment,
+      decidedBy,
+      decidedAt,
+    });
+  });
+
+  it('reports a rejection with its comment', async () => {
+    const rejection = { ...detail().decisions[0], decision: 'rejected', comment: 'Never agreed.' };
+    const { fetch } = fakeFetch(login('t1'), [200, detail({ status: 'rejected', decisions: [rejection] })]);
+    expect(await store(fetch).find({ invoiceId: 'INV-1003', approvalId: REQUEST_ID })).toMatchObject({
+      status: 'rejected',
+      comment: 'Never agreed.',
+    });
+  });
+
+  it('treats a request for another invoice or another source as not found', async () => {
+    const other = fakeFetch(login('t1'), [200, detail({ externalRef: 'INV-1005' })]);
+    expect(await store(other.fetch).find({ invoiceId: 'INV-1003', approvalId: REQUEST_ID })).toBeUndefined();
+    const manual = fakeFetch(login('t1'), [200, detail({ source: 'manual' })]);
+    expect(await store(manual.fetch).find({ invoiceId: 'INV-1003', approvalId: REQUEST_ID })).toBeUndefined();
+  });
+
+  it('answers undefined for an unknown id (404) or one that is not a platform id, without calling the API', async () => {
+    const { fetch } = fakeFetch(login('t1'), [404, { title: 'Not Found' }]);
+    expect(await store(fetch).find({ invoiceId: 'INV-1003', approvalId: REQUEST_ID })).toBeUndefined();
+    const none = fakeFetch();
+    expect(await store(none.fetch).find({ invoiceId: 'INV-1003', approvalId: 'APR-0001' })).toBeUndefined();
+    expect(none.calls).toHaveLength(0);
+  });
+
+  it('answers undefined when the invoice has no request', async () => {
+    const { fetch } = fakeFetch(login('t1'), page());
+    expect(await store(fetch).find({ invoiceId: 'INV-1004' })).toBeUndefined();
+  });
+
+  it('keeps exception codes it does not know out of the record', async () => {
+    const { fetch } = fakeFetch(login('t1'), [200, detail({ metadata: { exceptionCodes: ['PRICE_VARIANCE', 'APPROVE_ME'] } })]);
+    expect((await store(fetch).find({ invoiceId: 'INV-1003', approvalId: REQUEST_ID }))?.exceptionCodes).toEqual(['PRICE_VARIANCE']);
+  });
+
+  it('retries a 503 on reads too', async () => {
+    const { fetch } = fakeFetch(login('t1'), [503, { title: 'Service Unavailable' }], [200, detail()]);
+    expect((await store(fetch).find({ invoiceId: 'INV-1003', approvalId: REQUEST_ID }))?.status).toBe('approved');
+    expect(delays).toHaveLength(1);
   });
 });

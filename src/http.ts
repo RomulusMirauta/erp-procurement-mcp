@@ -1,12 +1,15 @@
 // Streamable HTTP transport, for running the server remotely. Stateless: every POST gets its own MCP server and
 // transport, so no session lives between requests and the same handler runs on a long-lived Node process or on
 // a serverless function (api/mcp.js). The ERP data and the approval store are loaded once and shared.
+// With APPROVALS_WEBHOOK_SECRET set, POST /webhooks/approvals receives decisions from the approvals platform
+// (src/webhooks.ts); it is signed instead of using the bearer token.
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { loadServerDeps } from './config.js';
 import { RateLimiter, type RateLimitOptions } from './rate-limit.js';
 import { createServer, type ServerDeps } from './server.js';
+import { createWebhookHandler, readWebhookSecret } from './webhooks.js';
 
 export type HttpHandler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
 
@@ -20,6 +23,11 @@ export interface HttpOptions {
   maxBodyBytes?: number;
   rateLimit?: RateLimitOptions;
   requestTimeoutMs?: number;
+  // Decoded APPROVALS_WEBHOOK_SECRET. Unset: no webhook route (404), so an unconfigured server fails closed.
+  webhookSecret?: Buffer;
+  maxWebhookBodyBytes?: number;
+  // Milliseconds; tests move the clock for the webhook's replay window.
+  now?: () => number;
 }
 
 const MIN_TOKEN_LENGTH = 32;
@@ -70,14 +78,34 @@ export function createHttpHandler({
   maxBodyBytes = MAX_BODY_BYTES,
   rateLimit = RATE_LIMIT,
   requestTimeoutMs = REQUEST_TIMEOUT_MS,
+  webhookSecret,
+  maxWebhookBodyBytes,
+  now,
 }: HttpOptions): HttpHandler {
   const expectedToken = digest(authToken);
   const limiter = new RateLimiter(rateLimit);
+  const webhook =
+    webhookSecret && createWebhookHandler({ deps, secret: webhookSecret, maxBodyBytes: maxWebhookBodyBytes, now });
 
   return async (req, res) => {
     const { pathname } = new URL(req.url ?? '/', 'http://localhost');
     // For load balancers and uptime checks; says nothing about the data, so it needs no token.
     if (pathname === '/health') return sendJson(res, 200, { status: 'ok' });
+
+    if (pathname === '/webhooks/approvals' && webhook) {
+      // Same bucket as /mcp, so forged deliveries are throttled too; the sender retries a 429.
+      const limit = limiter.take(req.socket.remoteAddress ?? 'unknown');
+      if (!limit.allowed) {
+        return sendJson(res, 429, { error: 'Too many requests' }, { 'Retry-After': String(limit.retryAfterSeconds) });
+      }
+      // A sender that uploads slowly must not hold the request open forever.
+      const timeout = setTimeout(() => {
+        if (!res.headersSent) sendJson(res, 503, { error: 'Request timed out' });
+        else res.destroy();
+      }, requestTimeoutMs);
+      res.on('close', () => clearTimeout(timeout));
+      return webhook(req, res);
+    }
     if (pathname !== '/mcp') return sendJson(res, 404, { error: 'Not found' });
 
     // DNS rebinding: a malicious page can make a browser send requests to a server on the user's network.
@@ -133,9 +161,12 @@ export async function createHttpHandlerFromEnv(
 ): Promise<{ handler: HttpHandler; summary: string }> {
   const authToken = readAuthToken(env);
   const allowedOrigins = readAllowedOrigins(env);
+  const webhookSecret = readWebhookSecret(env);
   const { deps, summary } = await loadServerDeps(env);
   return {
-    handler: createHttpHandler({ deps, authToken, allowedOrigins }),
-    summary: `${summary}, allowed origins: ${allowedOrigins?.join(' ') ?? 'any'}`,
+    handler: createHttpHandler({ deps, authToken, allowedOrigins, webhookSecret }),
+    summary:
+      `${summary}, allowed origins: ${allowedOrigins?.join(' ') ?? 'any'}, ` +
+      `approvals webhook: ${webhookSecret ? 'POST /webhooks/approvals' : 'off'}`,
   };
 }

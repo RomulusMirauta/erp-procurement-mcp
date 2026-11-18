@@ -13,7 +13,7 @@ check() { # check <output> <text it must contain>
 expect_tools_and_match() { # expect_tools_and_match <inspector target arguments...>
   local tools result
   tools=$("${inspector[@]}" "$@" --method tools/list)
-  for name in search_invoices get_invoice match_invoice request_approval; do check "$tools" "\"name\": \"$name\""; done
+  for name in search_invoices get_invoice match_invoice request_approval get_approval_status; do check "$tools" "\"name\": \"$name\""; done
   result=$("${inspector[@]}" "$@" --method tools/call --tool-name match_invoice --tool-arg invoiceId=INV-1001)
   check "$result" '"status": "matched"'
 }

@@ -1,8 +1,9 @@
 // Sends approval requests to the approvals platform (github.com/RomulusMirauta/approvals-platform),
-// where an approver sees them in the dashboard's exception queue. The server signs in as an agent account.
+// where an approver sees them in the dashboard's exception queue, and reads back what the approver decided.
+// The server signs in as an agent account, which sees only the requests it raised.
 import { z } from 'zod';
-import type { ExceptionCode } from '../erp/matching.js';
-import type { ApprovalStore, NewApprovalRequest, SubmitResult } from './store.js';
+import { EXCEPTION_CODES, type ExceptionCode } from '../erp/matching.js';
+import { APPROVAL_STATUSES, type ApprovalQuery, type ApprovalRecord, type ApprovalStore, type NewApprovalRequest, type SubmitResult } from './store.js';
 
 export interface HttpApprovalStoreOptions {
   baseUrl: string;
@@ -15,7 +16,7 @@ export interface HttpApprovalStoreOptions {
 
 export const SOURCE = 'erp-procurement-mcp';
 
-// Retrying is safe here because both calls are idempotent. Signing in has no side effect, and the platform
+// Retrying is safe here because every call is idempotent. Signing in and reading have no side effect, and the platform
 // allows one pending request per (source, externalRef): a repeated POST /v1/requests returns the request the
 // first attempt created instead of a duplicate, even if that attempt's response was lost on the way back.
 const MAX_ATTEMPTS = 3;
@@ -56,10 +57,40 @@ const CreateResponse = z.object({
     metadata: z.object({ requestedBy: z.string().optional() }).loose(),
   }),
 });
+// GET /v1/requests (RequestPage) and GET /v1/requests/:id (RequestDetail) in the platform's contract.
+const RequestSummary = z.object({ id: z.string(), source: z.string(), externalRef: z.string().nullable() });
+const RequestPage = z.object({ items: z.array(RequestSummary) });
+const RequestDetail = RequestSummary.extend({
+  status: z.enum(APPROVAL_STATUSES),
+  createdAt: z.string(),
+  decidedAt: z.string().nullable(),
+  metadata: z.object({ exceptionCodes: z.array(z.string()).optional() }).loose(),
+  decisions: z.array(z.object({ approver: z.object({ name: z.string() }), comment: z.string() })),
+});
 const Problem = z.object({ title: z.string(), detail: z.string().optional() }).loose();
+
+// Request ids on the platform are UUIDs. Anything else can't be one, and must not reach the URL path.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// The list's q filter matches by substring, and an invoice has few requests: one page is plenty.
+const PAGE_SIZE = 100;
+const KNOWN_CODES: ReadonlySet<string> = new Set(EXCEPTION_CODES);
+
+const iso = (value: string) => new Date(value).toISOString();
 
 export class ApprovalsApiError extends Error {
   override name = 'ApprovalsApiError';
+  // A private field with a getter, not an own property, so two errors with the same message still compare equal.
+  readonly #status: number | undefined;
+
+  constructor(message: string, status?: number) {
+    super(message);
+    this.#status = status;
+  }
+
+  // The HTTP status the API answered with; undefined when it was unreachable.
+  get status(): number | undefined {
+    return this.#status;
+  }
 }
 
 export class HttpApprovalStore implements ApprovalStore {
@@ -108,33 +139,74 @@ export class HttpApprovalStore implements ApprovalStore {
     };
   }
 
-  private async post(path: string, body: unknown, retryOn401 = true): Promise<unknown> {
+  async find({ invoiceId, approvalId }: ApprovalQuery): Promise<ApprovalRecord | undefined> {
+    let id = approvalId;
+    if (id === undefined) {
+      const query = new URLSearchParams({ source: SOURCE, q: invoiceId, pageSize: String(PAGE_SIZE) });
+      const { items } = RequestPage.parse(await this.call('GET', `/v1/requests?${query}`));
+      // Newest first, so the first exact match is the latest request for this invoice.
+      id = items.find((item) => item.source === SOURCE && item.externalRef === invoiceId)?.id;
+    }
+    if (id === undefined || !UUID.test(id)) return undefined;
+
+    let detail: z.infer<typeof RequestDetail>;
+    try {
+      detail = RequestDetail.parse(await this.call('GET', `/v1/requests/${id}`));
+    } catch (error) {
+      // Someone else's request answers 404 too, so ids of requests this account can't see leak nothing.
+      if (error instanceof ApprovalsApiError && error.status === 404) return undefined;
+      throw error;
+    }
+    if (detail.source !== SOURCE || detail.externalRef !== invoiceId) return undefined;
+
+    const decision = detail.decisions.at(-1);
+    return {
+      id: detail.id,
+      invoiceId,
+      status: detail.status,
+      // Only codes this server knows: metadata is free-form on the platform.
+      exceptionCodes: (detail.metadata.exceptionCodes ?? []).filter((code): code is ExceptionCode => KNOWN_CODES.has(code)),
+      comment: decision ? decision.comment : null,
+      decidedBy: decision ? decision.approver.name : null,
+      decidedAt: detail.decidedAt === null ? null : iso(detail.decidedAt),
+      createdAt: iso(detail.createdAt),
+    };
+  }
+
+  private post(path: string, body: unknown): Promise<unknown> {
+    return this.call('POST', path, body);
+  }
+
+  private async call(method: 'GET' | 'POST', path: string, body?: unknown, retryOn401 = true): Promise<unknown> {
     this.token ??= await this.login();
-    const response = await this.send(path, body, this.token);
+    const response = await this.send(method, path, body, this.token);
     // Tokens expire; sign in again once and retry.
     if (response.status === 401 && retryOn401) {
       this.token = undefined;
-      return this.post(path, body, false);
+      return this.call(method, path, body, false);
     }
     return this.read(response, path);
   }
 
   private async login(): Promise<string> {
     const { email, password } = this.options;
-    const response = await this.send('/v1/auth/login', { email, password });
+    const response = await this.send('POST', '/v1/auth/login', { email, password });
     return LoginResponse.parse(await this.read(response, '/v1/auth/login')).token;
   }
 
   // Retries network errors, timeouts, 429 and 5xx (see MAX_ATTEMPTS for why that is safe). The last response
   // is returned even if it failed, so read() reports it; a 401 goes back to post(), which signs in again.
-  private async send(path: string, body: unknown, token?: string): Promise<Response> {
+  private async send(method: 'GET' | 'POST', path: string, body?: unknown, token?: string): Promise<Response> {
     for (let attempt = 1; ; attempt++) {
       let response: Response | undefined;
       try {
         response = await this.fetch(`${this.baseUrl}${path}`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', ...(token && { authorization: `Bearer ${token}` }) },
-          body: JSON.stringify(body),
+          method,
+          headers: {
+            ...(body !== undefined && { 'content-type': 'application/json' }),
+            ...(token && { authorization: `Bearer ${token}` }),
+          },
+          ...(body !== undefined && { body: JSON.stringify(body) }),
           signal: AbortSignal.timeout(10_000),
         });
       } catch (error) {
@@ -156,6 +228,6 @@ export class HttpApprovalStore implements ApprovalStore {
     if (response.ok) return json;
     const problem = Problem.safeParse(json);
     const detail = problem.success ? `${problem.data.title}${problem.data.detail ? `: ${problem.data.detail}` : ''}` : '';
-    throw new ApprovalsApiError(`Approvals API ${path} failed with ${response.status}${detail && ` (${detail})`}`);
+    throw new ApprovalsApiError(`Approvals API ${path} failed with ${response.status}${detail && ` (${detail})`}`, response.status);
   }
 }

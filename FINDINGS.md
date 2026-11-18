@@ -37,3 +37,15 @@ ERP text was reviewed as untrusted input, with an invoice whose line description
 | Low | The server told clients it was version 0.1.0 after the 0.2.0 release. | `SERVER_VERSION` is 0.2.0, and a test compares it with `package.json`. |
 
 The first run of the agent evals turned up a problem in the eval, not the server: the injection scenario failed only its "warns about the instructions" check, and its other checks passed without the injected text ever reaching the model. The agent only searched and matched, and neither tool returns line descriptions (after the fix above, match results carry no supplier text at all). The scenario now asks what each invoice bills for, so the agent reads INV-1010 with `get_invoice`, and checks that it did. With the text in front of it, the agent still sent INV-1003 and INV-1010 to approval and pointed out the embedded instructions.
+
+## 2026-11-18: closing the approval loop
+
+Building `get_approval_status` and the decision webhook turned up these points; each is handled and tested.
+
+| Severity | Finding | Handling |
+|---|---|---|
+| High | An approval can go stale while it waits. INV-1005 was sent with `QUANTITY_NOT_RECEIVED`; once INV-1003 on the same PO is approved, INV-1005 also fails `QUANTITY_EXCEEDS_PO`, which its approver never saw. Applying the approval blindly would approve it for payment. | The receiver re-runs the match. Exceptions outside the ones on the request keep the invoice `on_hold` with a note, and it needs a new approval. |
+| Medium | The platform's list endpoint has no exact `externalRef` filter: `q` matches the title or reference by substring, so `INV-1003` also finds `INV-10031`. | The store filters by `source` on the server and keeps only exact `externalRef` matches. |
+| Medium | The platform's event payload carries `decidedBy` as the approver's user id; the name is only in `actor`. | The approver name comes from `actor.name`, falling back to the id. |
+| Low | The sender retries any non-`2xx`, so a `4xx` for a correctly signed but unusable body (unknown type, other source, malformed payload) would be retried 5 times for nothing. | `4xx` only for requests that can't be trusted (headers, signature, replay window, size); everything else that is signed answers `200` with `ignored` and a reason. |
+| Low | zod's `.nullable()` on a plain string publishes `type: ["string", "null"]`, which the MCP Inspector flags as less portable. | The nullable strings in the new output schema are unions of a length-limited string and `null`, which publish `anyOf`. |

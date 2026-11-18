@@ -2,10 +2,18 @@
 // SDK server and the client check every structuredContent against them. `satisfies` ties the schemas to the
 // types the business code already returns (Money, MatchResult, ApprovalRequest), so the two can't drift apart.
 import { z } from 'zod';
-import type { ApprovalRequest } from './approvals/store.js';
+import { APPROVAL_STATUSES, type ApprovalRecord, type ApprovalRequest } from './approvals/store.js';
 import { EXCEPTION_CODES, type MatchResult } from './erp/matching.js';
 import type { Money } from './erp/money.js';
-import { CurrencySchema, GoodsReceiptSchema, InvoiceSchema, PurchaseOrderSchema, SupplierSchema } from './erp/schema.js';
+import {
+  CurrencySchema,
+  GoodsReceiptSchema,
+  InvoiceDecisionSchema,
+  InvoiceSchema,
+  InvoiceStatusSchema,
+  PurchaseOrderSchema,
+  SupplierSchema,
+} from './erp/schema.js';
 
 const MoneySchema = z.object({
   amountMinor: z.number().int(),
@@ -39,6 +47,18 @@ const ApprovalRequestSchema = z.object({
   createdAt: z.iso.datetime(),
 }) satisfies z.ZodType<ApprovalRequest>;
 
+const ApprovalRecordSchema = z.object({
+  id: z.string(),
+  status: z.enum(APPROVAL_STATUSES),
+  exceptionCodes: z.array(ExceptionCodeSchema),
+  // A union of a constrained string and null publishes anyOf with one type per branch, which more clients accept than
+  // .nullable()'s type: ["string", "null"] (the Inspector flags that as less portable). The platform caps comments at 2000.
+  comment: z.union([z.string().max(5000), z.null()]),
+  decidedBy: z.union([z.string().max(1000), z.null()]),
+  decidedAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+}) satisfies z.ZodType<Omit<ApprovalRecord, 'invoiceId'>>;
+
 export const SearchInvoicesOutputSchema = z.object({
   total: z.number().int(),
   offset: z.number().int(),
@@ -65,7 +85,14 @@ export const RequestApprovalOutputSchema = z.object({
   approval: ApprovalRequestSchema,
 });
 
+export const GetApprovalStatusOutputSchema = z.object({
+  invoice: z.object({ id: z.string(), status: InvoiceStatusSchema, decision: InvoiceDecisionSchema.optional() }),
+  // null when the invoice was never sent for approval.
+  approval: ApprovalRecordSchema.nullable(),
+});
+
 export type SearchInvoicesOutput = z.infer<typeof SearchInvoicesOutputSchema>;
 export type GetInvoiceOutput = z.infer<typeof GetInvoiceOutputSchema>;
 export type MatchInvoiceOutput = z.infer<typeof MatchInvoiceOutputSchema>;
 export type RequestApprovalOutput = z.infer<typeof RequestApprovalOutputSchema>;
+export type GetApprovalStatusOutput = z.infer<typeof GetApprovalStatusOutputSchema>;

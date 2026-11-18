@@ -5,17 +5,23 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { InMemoryApprovalStore } from '../src/approvals/store.js';
+import { applyDecision } from '../src/approvals/decisions.js';
+import { InMemoryApprovalStore, type ApprovalRecord, type ApprovalStore } from '../src/approvals/store.js';
 import { ErpRepository } from '../src/erp/repository.js';
 import { createServer } from '../src/server.js';
 
 let client: Client;
 let approvals: InMemoryApprovalStore;
+let repository: ErpRepository;
 
-async function connect(priceTolerancePct?: number) {
-  const repository = await ErpRepository.fromFile(new URL('../data/erp-sample.json', import.meta.url));
+async function connect(priceTolerancePct?: number, store?: ApprovalStore) {
+  repository = await ErpRepository.fromFile(new URL('../data/erp-sample.json', import.meta.url));
   approvals = new InMemoryApprovalStore(() => new Date('2026-11-18T09:00:00Z'));
-  const server = createServer({ repository, approvals, ...(priceTolerancePct === undefined ? {} : { priceTolerancePct }) });
+  const server = createServer({
+    repository,
+    approvals: store ?? approvals,
+    ...(priceTolerancePct === undefined ? {} : { priceTolerancePct }),
+  });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   client = new Client({ name: 'test-client', version: '1.0.0' });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -47,12 +53,19 @@ describe('server info', () => {
 });
 
 describe('tool list', () => {
-  it('exposes the four tools with read-only hints on the queries', async () => {
+  it('exposes the five tools with read-only hints on the queries', async () => {
     const { tools } = await client.listTools();
     const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
-    expect(Object.keys(byName).sort()).toEqual(['get_invoice', 'match_invoice', 'request_approval', 'search_invoices']);
+    expect(Object.keys(byName).sort()).toEqual([
+      'get_approval_status',
+      'get_invoice',
+      'match_invoice',
+      'request_approval',
+      'search_invoices',
+    ]);
     expect(byName.search_invoices?.annotations?.readOnlyHint).toBe(true);
     expect(byName.match_invoice?.annotations?.readOnlyHint).toBe(true);
+    expect(byName.get_approval_status?.annotations).toMatchObject({ readOnlyHint: true, idempotentHint: true });
     expect(byName.request_approval?.annotations).toMatchObject({ readOnlyHint: false, idempotentHint: true });
   });
 
@@ -212,5 +225,113 @@ describe('request_approval', () => {
     const result = await call('request_approval', { invoiceId: 'INV-1003', reason: '   ok    ' });
     expect(result.isError).toBe(true);
     expect(approvals.list()).toHaveLength(0);
+  });
+});
+
+describe('get_approval_status', () => {
+  const reason = 'Unit price for bolts is 8% above the PO; supplier needs to confirm.';
+  const decide = async (decision: 'approved' | 'rejected', comment: string) => {
+    const approval = await approvals.recordDecision({
+      approvalId: 'APR-0001',
+      invoiceId: 'INV-1003',
+      decision,
+      comment,
+      decidedBy: 'Ana Pop',
+      decidedAt: '2026-11-18T10:00:00.000Z',
+    });
+    applyDecision(repository, approval!);
+  };
+
+  it('reports a pending request with the invoice still on hold', async () => {
+    await call('request_approval', { invoiceId: 'INV-1003', reason });
+    const result = await call('get_approval_status', { invoiceId: 'INV-1003' });
+    expect(result.isError).toBe(false);
+    expect(result.data).toEqual({
+      invoice: { id: 'INV-1003', status: 'on_hold' },
+      approval: {
+        id: 'APR-0001',
+        status: 'pending',
+        exceptionCodes: ['PRICE_VARIANCE'],
+        comment: null,
+        decidedBy: null,
+        decidedAt: null,
+        createdAt: '2026-11-18T09:00:00.000Z',
+      },
+    });
+    expect(JSON.parse(result.text)).toEqual(result.data);
+  });
+
+  it('reports an approval, its comment and the invoice now approved for payment', async () => {
+    await call('request_approval', { invoiceId: 'INV-1003', reason });
+    await decide('approved', 'Supplier confirmed the new price list.');
+    const { data } = await call('get_approval_status', { invoiceId: 'INV-1003', approvalId: 'APR-0001' });
+    expect(data.approval).toMatchObject({
+      status: 'approved',
+      comment: 'Supplier confirmed the new price list.',
+      decidedBy: 'Ana Pop',
+      decidedAt: '2026-11-18T10:00:00.000Z',
+    });
+    expect(data.invoice).toMatchObject({
+      status: 'approved',
+      decision: { approvalId: 'APR-0001', decision: 'approved', note: expect.stringContaining('PRICE_VARIANCE') },
+    });
+  });
+
+  it('reports a rejection and the invoice rejected', async () => {
+    await call('request_approval', { invoiceId: 'INV-1003', reason });
+    await decide('rejected', 'Price increase was never agreed.');
+    const { data } = await call('get_approval_status', { invoiceId: 'INV-1003' });
+    expect(data.approval).toMatchObject({ status: 'rejected', comment: 'Price increase was never agreed.' });
+    expect(data.invoice.status).toBe('rejected');
+  });
+
+  it('reports a cancelled request from the store', async () => {
+    const cancelled: ApprovalRecord = {
+      id: '5b0c7a8e-2f3d-4e1a-9c6b-1d2e3f4a5b6c',
+      invoiceId: 'INV-1005',
+      status: 'cancelled',
+      exceptionCodes: ['QUANTITY_NOT_RECEIVED'],
+      comment: null,
+      decidedBy: null,
+      decidedAt: '2026-11-18T11:00:00.000Z',
+      createdAt: '2026-11-18T09:00:00.000Z',
+    };
+    const store: ApprovalStore = {
+      submit: () => Promise.reject(new Error('not used')),
+      find: async ({ invoiceId }) => (invoiceId === 'INV-1005' ? cancelled : undefined),
+    };
+    await client.close();
+    await connect(undefined, store);
+    const { data } = await call('get_approval_status', { invoiceId: 'INV-1005' });
+    // The invoice id is said once, in invoice.
+    const { id, status, exceptionCodes, comment, decidedBy, decidedAt, createdAt } = cancelled;
+    expect(data).toEqual({
+      invoice: { id: 'INV-1005', status: 'received' },
+      approval: { id, status, exceptionCodes, comment, decidedBy, decidedAt, createdAt },
+    });
+  });
+
+  it('returns approval: null for an invoice that was never sent for approval', async () => {
+    const { isError, data } = await call('get_approval_status', { invoiceId: 'INV-1004' });
+    expect(isError).toBe(false);
+    expect(data).toEqual({ invoice: { id: 'INV-1004', status: 'received' }, approval: null });
+  });
+
+  it('returns a tool error for an unknown invoice or an approval id that is not for this invoice', async () => {
+    await call('request_approval', { invoiceId: 'INV-1003', reason });
+    expect(await call('get_approval_status', { invoiceId: 'INV-9999' })).toMatchObject({ isError: true });
+    const wrong = await call('get_approval_status', { invoiceId: 'INV-1005', approvalId: 'APR-0001' });
+    expect(wrong).toMatchObject({ isError: true, text: expect.stringContaining('APR-0001') });
+  });
+
+  it('rejects an approval id that could change the API path', async () => {
+    expect((await call('get_approval_status', { invoiceId: 'INV-1003', approvalId: '../auth/login' })).isError).toBe(true);
+  });
+
+  it('does not change anything', async () => {
+    await call('request_approval', { invoiceId: 'INV-1003', reason });
+    await call('get_approval_status', { invoiceId: 'INV-1003' });
+    expect(approvals.list()).toHaveLength(1);
+    expect(repository.getInvoice('INV-1003')?.status).toBe('on_hold');
   });
 });

@@ -8,6 +8,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
+- `get_approval_status` tool (read-only): where an invoice's approval request stands (pending, approved, rejected, cancelled), the approver's comment, who decided and when, and the invoice's current ERP status. Works with the in-memory store and the approvals platform API.
+- `POST /webhooks/approvals` on the HTTP transport (`APPROVALS_WEBHOOK_SECRET`): receives `request.approved` / `request.rejected` from the approvals platform in the Standard Webhooks format (HMAC-SHA256 over the raw body, 5-minute replay window, idempotent per `webhook-id`) and applies the decision to the invoice. An approval is re-checked against the match: an exception the approver never saw keeps the invoice on hold, with a note.
+- Invoices carry the last applied `decision` (approval id, outcome, approver, time, server note).
+- An agent eval for checking the status of an approval.
 - npm package metadata and a release workflow: pushing a `v*` tag publishes to npm with Trusted Publishing and provenance.
 
 - HTTP limits: bodies over 1 MiB get `413`, a per-client-IP token bucket (60 requests, refilling at 1 per second) answers `429` with `Retry-After`, and requests over 60 s get `503`.
