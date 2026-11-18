@@ -186,28 +186,27 @@ export function createServer({
       outputSchema: RequestApprovalOutputSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    ({ invoiceId: id, reason, requestedBy }) => {
+    async ({ invoiceId: id, reason, requestedBy }) => {
       const invoice = repository.getInvoice(id);
       if (!invoice) return unknownInvoice(id);
       if (!AWAITING_DECISION.has(invoice.status)) {
         return fail(`Invoice ${id} is ${invoice.status}; only received or on-hold invoices can be sent for approval.`);
       }
 
-      const existing = approvals.findPending(id);
-      if (existing) return ok<RequestApprovalOutput>({ created: false, approval: existing });
-
       // The server re-checks the invoice itself instead of trusting the agent's claim that it failed.
       const match = matchInvoice(invoice, matchContext(repository, invoice), priceTolerancePct);
       if (match.status === 'matched') {
         return fail(`Invoice ${id} passes three-way matching, so it needs no approval.`);
       }
-      const approval = approvals.create({
+      const result = await approvals.submit({
         invoiceId: id,
         reason,
         requestedBy,
         exceptionCodes: match.exceptions.map((exception) => exception.code),
+        invoiceTotal: money(lineTotalMinor(invoice.lines), invoice.currency),
+        supplierName: repository.getSupplier(invoice.supplierId)?.name ?? invoice.supplierId,
       });
-      return ok<RequestApprovalOutput>({ created: true, approval });
+      return ok<RequestApprovalOutput>(result);
     },
   );
 

@@ -1,6 +1,8 @@
 // Approval requests: the human-in-the-loop step. An agent finds an exception, a person decides.
-// This in-memory store lives as long as the server process. The approvals platform will replace it with an API.
+// Two stores implement the same interface: in memory (the default, for trying the server out) and the
+// approvals platform's REST API (http-store.ts), where people review requests in a dashboard.
 import type { ExceptionCode } from '../erp/matching.js';
+import type { Money } from '../erp/money.js';
 
 export interface ApprovalRequest {
   id: string;
@@ -12,12 +14,24 @@ export interface ApprovalRequest {
   createdAt: string;
 }
 
-export type NewApprovalRequest = Pick<ApprovalRequest, 'invoiceId' | 'reason' | 'exceptionCodes' | 'requestedBy'>;
+export interface NewApprovalRequest {
+  invoiceId: string;
+  reason: string;
+  exceptionCodes: ExceptionCode[];
+  requestedBy: string;
+  // Context for the approver; the in-memory store doesn't need it.
+  invoiceTotal: Money;
+  supplierName: string;
+}
+
+export interface SubmitResult {
+  created: boolean;
+  approval: ApprovalRequest;
+}
 
 export interface ApprovalStore {
-  findPending(invoiceId: string): ApprovalRequest | undefined;
-  create(request: NewApprovalRequest): ApprovalRequest;
-  list(): readonly ApprovalRequest[];
+  // Creates a pending request, or returns the one already pending for this invoice: agents retry.
+  submit(request: NewApprovalRequest): Promise<SubmitResult>;
 }
 
 export class InMemoryApprovalStore implements ApprovalStore {
@@ -25,19 +39,21 @@ export class InMemoryApprovalStore implements ApprovalStore {
 
   constructor(private readonly now: () => Date = () => new Date()) {}
 
-  findPending(invoiceId: string): ApprovalRequest | undefined {
-    return this.requests.find((request) => request.invoiceId === invoiceId && request.status === 'pending');
-  }
+  async submit({ invoiceId, reason, exceptionCodes, requestedBy }: NewApprovalRequest): Promise<SubmitResult> {
+    const pending = this.requests.find((request) => request.invoiceId === invoiceId && request.status === 'pending');
+    if (pending) return { created: false, approval: pending };
 
-  create(request: NewApprovalRequest): ApprovalRequest {
-    const created: ApprovalRequest = {
-      ...request,
+    const approval: ApprovalRequest = {
       id: `APR-${String(this.requests.length + 1).padStart(4, '0')}`,
+      invoiceId,
+      reason,
+      exceptionCodes,
+      requestedBy,
       status: 'pending',
       createdAt: this.now().toISOString(),
     };
-    this.requests.push(created);
-    return created;
+    this.requests.push(approval);
+    return { created: true, approval };
   }
 
   list(): readonly ApprovalRequest[] {
