@@ -85,6 +85,7 @@ To use your own data, set `ERP_DATA_FILE` to the absolute path of a JSON file wi
 src/
   index.ts              entry point: loads data, serves over stdio
   server.ts             MCP layer: the four tool definitions, nothing else
+  outputs.ts            what each tool returns, as zod schemas (published as outputSchema)
   erp/schema.ts         data model as zod schemas; types are inferred from them
   erp/repository.ts     loads and validates the data, integrity checks, lookups
   erp/matching.ts       three-way matching rules (pure function)
@@ -107,6 +108,7 @@ tests/
 - **The agent can't loosen the rules.** The price tolerance is finance policy, set when the server starts. It is deliberately not a tool argument, so a prompt-injected invoice can't talk the agent into a looser check.
 - **Only approved and paid invoices use up quantity.** Pending invoices, including wrong ones, don't block a correct invoice. Once one of two competing invoices is approved, the other fails its next check. For duplicates, approved and paid invoices always count as earlier, so a backdated copy of a paid invoice is still caught.
 - **Writes are idempotent.** Agents retry. A second `request_approval` for the same invoice returns the pending request instead of creating a duplicate. The store is in memory, so this holds within one server process. The approvals platform will enforce it with a unique constraint in the database.
+- **Typed outputs.** Each tool publishes an `outputSchema` and returns `structuredContent`, so a client gets checked data instead of parsing text. The schemas reuse the data model and are tied to the business types (`Money`, `MatchResult`, `ApprovalRequest`) with `satisfies`, so a change on one side fails the typecheck. The same JSON is still sent as text for clients that only read text, and errors stay plain text.
 - **Tool annotations** (`readOnlyHint`, `idempotentHint`) tell the client which calls are safe to run without asking the user.
 - **stdio transport, logs on stderr.** stdout carries the protocol, so a stray `console.log` would corrupt it.
 
@@ -126,7 +128,6 @@ CI runs lint, typecheck, tests and the build on Node 22 and 24 (Ubuntu), and on 
 
 - Send approval requests to the approvals platform (in progress: Node.js API, Postgres, React dashboard) through its REST API, instead of keeping them in memory.
 - Streamable HTTP transport with authentication, for running the server remotely.
-- Typed tool outputs (`outputSchema` and `structuredContent`).
 
 ## License
 
