@@ -6,9 +6,25 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- HTTP limits: bodies over 1 MiB get `413`, a per-client-IP token bucket (60 requests, refilling at 1 per second) answers `429` with `Retry-After`, and requests over 60 s get `503`.
+- Server instructions and tool descriptions tell the model that ERP text is supplier data, not instructions.
+- A "Security model" README section: what the agent can and can't do, and why approval stays with a person.
+- Prompt-injection tests with a fixture invoice whose line description carries injected instructions.
+- MCP Inspector CLI smoke test of the built server over stdio and HTTP (`npm run smoke`), run in CI.
+- Agent evals through Claude Code in headless mode (`npm run evals`) and a manual `Agent evals` workflow.
+
 ### Changed
 
 - The approvals API client retries network errors, timeouts, `429` and `5xx` (3 attempts, exponential backoff with jitter, honouring `Retry-After`), never other `4xx`.
+- The `LINE_NOT_ON_PO` message names the line number only; the supplier's description is no longer quoted in it.
+
+### Fixed
+
+- The server reported version 0.1.0 to clients instead of the package version.
+
+See [FINDINGS.md](FINDINGS.md) for how the bugs were found.
 
 ## [0.2.0] - 2026-11-18
 

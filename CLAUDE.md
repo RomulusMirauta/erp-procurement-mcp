@@ -6,7 +6,8 @@ exceptions to a person for approval (in memory, or the approvals-platform API). 
 ## Commands
 
 - `npm run dev` / `npm run dev:http`: run from source (stdio / Streamable HTTP)
-- `npm run lint && npm run typecheck && npm test && npm run build`: what CI runs (Node 22, 24; Windows)
+- `npm run lint && npm run typecheck && npm test && npm run build && npm run smoke`: what CI runs (Node 22, 24; Windows)
+- `npm run evals`: agent evals through the `claude` CLI (costs a few cents; not in CI, see evals.yml)
 
 ## Conventions
 
@@ -22,3 +23,4 @@ exceptions to a person for approval (in memory, or the approvals-platform API). 
 - Never commit secrets (`.env`, tokens, `MCP_AUTH_TOKEN`); use `.env.example` for new settings.
 - Don't force-push or delete `main`, and don't loosen the matching rules to make a test pass.
 - Don't let a tool argument change server policy (e.g. the price tolerance).
+- Don't put ERP text (descriptions, names) into server-written messages or tool descriptions: it is untrusted input.
